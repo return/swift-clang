@@ -4499,6 +4499,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-mms-bitfields");
   }
 
+  if (Args.hasFlag(options::OPT_mpie_copy_relocations,
+                   options::OPT_mno_pie_copy_relocations,
+                   false)) {
+    CmdArgs.push_back("-mpie-copy-relocations");
+  }
+
   // This is a coarse approximation of what llvm-gcc actually does, both
   // -fasynchronous-unwind-tables and -fnon-call-exceptions interact in more
   // complicated ways.
@@ -4804,7 +4810,16 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   if (Args.hasFlag(options::OPT_fxray_instrument,
                    options::OPT_fnoxray_instrument, false)) {
-    CmdArgs.push_back("-fxray-instrument");
+    const char *const XRayInstrumentOption = "-fxray-instrument";
+    if (Triple.getOS() == llvm::Triple::Linux &&
+        (Triple.getArch() == llvm::Triple::arm ||
+         Triple.getArch() == llvm::Triple::x86_64)) {
+      // Supported.
+    } else {
+      D.Diag(diag::err_drv_clang_unsupported)
+          << (std::string(XRayInstrumentOption) + " on " + Triple.str());
+    }
+    CmdArgs.push_back(XRayInstrumentOption);
     if (const Arg *A =
             Args.getLastArg(options::OPT_fxray_instruction_threshold_,
                             options::OPT_fxray_instruction_threshold_EQ)) {
@@ -5606,9 +5621,11 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     llvm::sys::fs::file_status Status;
     if (llvm::sys::fs::status(A->getValue(), Status))
       D.Diag(diag::err_drv_no_such_file) << A->getValue();
-    CmdArgs.push_back(Args.MakeArgString(
-        "-fbuild-session-timestamp=" +
-        Twine((uint64_t)Status.getLastModificationTime().toEpochTime())));
+    CmdArgs.push_back(
+        Args.MakeArgString("-fbuild-session-timestamp=" +
+                           Twine((uint64_t)Status.getLastModificationTime()
+                                     .time_since_epoch()
+                                     .count())));
   }
 
   if (Args.getLastArg(options::OPT_fmodules_validate_once_per_build_session)) {
@@ -5764,7 +5781,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   ObjCRuntime objcRuntime = AddObjCRuntimeArgs(Args, CmdArgs, rewriteKind);
 
   // -fobjc-dispatch-method is only relevant with the nonfragile-abi, and
-  // legacy is the default. Except for deployment taget of 10.5,
+  // legacy is the default. Except for deployment target of 10.5,
   // next runtime is always legacy dispatch and -fno-objc-legacy-dispatch
   // gets ignored silently.
   if (objcRuntime.isNonFragile()) {
@@ -7912,6 +7929,29 @@ bool darwin::Linker::NeedsTempPath(const InputInfoList &Inputs) const {
   return false;
 }
 
+/// \brief Pass -no_deduplicate to ld64 under certain conditions:
+///
+/// - Either -O0 or -O1 is explicitly specified
+/// - No -O option is specified *and* this is a compile+link (implicit -O0)
+///
+/// Also do *not* add -no_deduplicate when no -O option is specified and this
+/// is just a link (we can't imply -O0)
+static bool shouldLinkerNotDedup(bool IsLinkerOnlyAction, const ArgList &Args) {
+  if (Arg *A = Args.getLastArg(options::OPT_O_Group)) {
+    if (A->getOption().matches(options::OPT_O0))
+      return true;
+    if (A->getOption().matches(options::OPT_O))
+      return llvm::StringSwitch<bool>(A->getValue())
+                    .Case("1", true)
+                    .Default(false);
+    return false; // OPT_Ofast & OPT_O4
+  }
+
+  if (!IsLinkerOnlyAction) // Implicit -O0 for compile+linker only.
+    return true;
+  return false;
+}
+
 void darwin::Linker::AddLinkArgs(Compilation &C, const ArgList &Args,
                                  ArgStringList &CmdArgs,
                                  const InputInfoList &Inputs) const {
@@ -7949,24 +7989,28 @@ void darwin::Linker::AddLinkArgs(Compilation &C, const ArgList &Args,
       CmdArgs.push_back("-object_path_lto");
       CmdArgs.push_back(TmpPath);
     }
+  }
 
-    // Use -lto_library option to specify the libLTO.dylib path. Try to find
-    // it in clang installed libraries. If not found, the option is not used
-    // and 'ld' will use its default mechanism to search for libLTO.dylib.
-    if (Version[0] >= 133) {
-      // Search for libLTO in <InstalledDir>/../lib/libLTO.dylib
-      StringRef P = llvm::sys::path::parent_path(D.getInstalledDir());
-      SmallString<128> LibLTOPath(P);
-      llvm::sys::path::append(LibLTOPath, "lib");
-      llvm::sys::path::append(LibLTOPath, "libLTO.dylib");
-      if (llvm::sys::fs::exists(LibLTOPath)) {
-        CmdArgs.push_back("-lto_library");
-        CmdArgs.push_back(C.getArgs().MakeArgString(LibLTOPath));
-      } else {
-        D.Diag(diag::warn_drv_lto_libpath);
-      }
+  // Use -lto_library option to specify the libLTO.dylib path. Try to find
+  // it in clang installed libraries. If not found, the option is not used
+  // and 'ld' will use its default mechanism to search for libLTO.dylib.
+  if (Version[0] >= 133) {
+    // Search for libLTO in <InstalledDir>/../lib/libLTO.dylib
+    StringRef P = llvm::sys::path::parent_path(D.getInstalledDir());
+    SmallString<128> LibLTOPath(P);
+    llvm::sys::path::append(LibLTOPath, "lib");
+    llvm::sys::path::append(LibLTOPath, "libLTO.dylib");
+    if (llvm::sys::fs::exists(LibLTOPath)) {
+      CmdArgs.push_back("-lto_library");
+      CmdArgs.push_back(C.getArgs().MakeArgString(LibLTOPath));
+    } else {
+      D.Diag(diag::warn_drv_lto_libpath);
     }
   }
+
+  // ld64 version 262 and above run the deduplicate pass by default.
+  if (Version[0] >= 262 && shouldLinkerNotDedup(C.getJobs().empty(), Args))
+    CmdArgs.push_back("-no_deduplicate");
 
   // Derived from the "link" spec.
   Args.AddAllArgs(CmdArgs, options::OPT_static);
@@ -9713,6 +9757,14 @@ void gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if (Arch == llvm::Triple::armeb || Arch == llvm::Triple::thumbeb)
     arm::appendEBLinkFlags(Args, CmdArgs, Triple);
 
+  // Most Android ARM64 targets should enable the linker fix for erratum
+  // 843419. Only non-Cortex-A53 devices are allowed to skip this flag.
+  if (Arch == llvm::Triple::aarch64 && isAndroid) {
+    std::string CPU = getCPUName(Args, Triple);
+    if (CPU.empty() || CPU == "generic" || CPU == "cortex-a53")
+      CmdArgs.push_back("--fix-cortex-a53-843419");
+  }
+
   for (const auto &Opt : ToolChain.ExtraOpts)
     CmdArgs.push_back(Opt.c_str());
 
@@ -10096,7 +10148,7 @@ void fuchsia::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   Args.ClaimAllArgs(options::OPT_w);
 
   const char *Exec = Args.MakeArgString(ToolChain.GetLinkerPath());
-  if (llvm::sys::path::filename(Exec).equals_lower("lld")) {
+  if (llvm::sys::path::stem(Exec).equals_lower("lld")) {
     CmdArgs.push_back("-flavor");
     CmdArgs.push_back("gnu");
   }
@@ -11306,6 +11358,8 @@ void tools::Myriad::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       !Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles);
   bool UseDefaultLibs =
       !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs);
+  // Silence warning if the args contain both -nostdlib and -stdlib=.
+  Args.getLastArg(options::OPT_stdlib_EQ);
 
   if (T.getArch() == llvm::Triple::sparc)
     CmdArgs.push_back("-EB");
@@ -11346,19 +11400,25 @@ void tools::Myriad::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if (UseDefaultLibs) {
     if (NeedsSanitizerDeps)
       linkSanitizerRuntimeDeps(TC, CmdArgs);
-    if (C.getDriver().CCCIsCXX())
-      CmdArgs.push_back("-lstdc++");
+    if (C.getDriver().CCCIsCXX()) {
+      if (TC.GetCXXStdlibType(Args) == ToolChain::CST_Libcxx) {
+        CmdArgs.push_back("-lc++");
+        CmdArgs.push_back("-lc++abi");
+      } else
+        CmdArgs.push_back("-lstdc++");
+    }
     if (T.getOS() == llvm::Triple::RTEMS) {
       CmdArgs.push_back("--start-group");
       CmdArgs.push_back("-lc");
+      CmdArgs.push_back("-lgcc"); // circularly dependent on rtems
       // You must provide your own "-L" option to enable finding these.
       CmdArgs.push_back("-lrtemscpu");
       CmdArgs.push_back("-lrtemsbsp");
       CmdArgs.push_back("--end-group");
     } else {
       CmdArgs.push_back("-lc");
+      CmdArgs.push_back("-lgcc");
     }
-    CmdArgs.push_back("-lgcc");
   }
   if (UseStartfiles) {
     CmdArgs.push_back(Args.MakeArgString(TC.GetFilePath("crtend.o")));

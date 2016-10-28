@@ -289,6 +289,14 @@ void DarwinClang::AddLinkARCArgs(const ArgList &Args,
   CmdArgs.push_back(Args.MakeArgString(P));
 }
 
+unsigned DarwinClang::GetDefaultDwarfVersion() const {
+  // Default to use DWARF 2 on OS X 10.10 / iOS 8 and lower.
+  if ((isTargetMacOS() && isMacosxVersionLT(10, 11)) ||
+      (isTargetIOSBased() && isIPhoneOSVersionLT(9)))
+    return 2;
+  return 4;
+}
+
 void MachO::AddLinkRuntimeLib(const ArgList &Args, ArgStringList &CmdArgs,
                               StringRef DarwinLibName, bool AlwaysLink,
                               bool IsEmbedded, bool AddRPath) const {
@@ -1427,6 +1435,43 @@ void Generic_GCC::GCCInstallationDetector::init(
       Prefixes.push_back("/opt/rh/devtoolset-1.0/root/usr");
       // And finally in /usr.
       Prefixes.push_back("/usr");
+    }
+  }
+
+  // Try to respect gcc-config on Gentoo. However, do that only
+  // if --gcc-toolchain is not provided or equal to the Gentoo install
+  // in /usr. This avoids accidentally enforcing the system GCC version
+  // when using a custom toolchain.
+  if (GCCToolchainDir == "" || GCCToolchainDir == D.SysRoot + "/usr") {
+    for (StringRef CandidateTriple : CandidateTripleAliases) {
+      llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> File =
+          D.getVFS().getBufferForFile(D.SysRoot + "/etc/env.d/gcc/config-" +
+                                      CandidateTriple.str());
+      if (File) {
+        SmallVector<StringRef, 2> Lines;
+        File.get()->getBuffer().split(Lines, "\n");
+        for (StringRef Line : Lines) {
+          // CURRENT=triple-version
+          if (Line.consume_front("CURRENT=")) {
+            const std::pair<StringRef, StringRef> ActiveVersion =
+              Line.rsplit('-');
+            // Note: Strictly speaking, we should be reading
+            // /etc/env.d/gcc/${CURRENT} now. However, the file doesn't
+            // contain anything new or especially useful to us.
+            const std::string GentooPath = D.SysRoot + "/usr/lib/gcc/" +
+                                           ActiveVersion.first.str() + "/" +
+                                           ActiveVersion.second.str();
+            if (D.getVFS().exists(GentooPath + "/crtbegin.o")) {
+              Version = GCCVersion::Parse(ActiveVersion.second);
+              GCCInstallPath = GentooPath;
+              GCCParentLibPath = GentooPath + "/../../..";
+              GCCTriple.setTriple(ActiveVersion.first);
+              IsValid = true;
+              return;
+            }
+          }
+        }
+      }
     }
   }
 
@@ -2970,7 +3015,7 @@ std::string HexagonToolChain::getHexagonTargetDir(
   if (getVFS().exists(InstallRelDir = InstalledDir + "/../target"))
     return InstallRelDir;
 
-  return InstallRelDir;
+  return InstalledDir;
 }
 
 Optional<unsigned> HexagonToolChain::getSmallDataThreshold(
@@ -3842,9 +3887,9 @@ static bool IsUbuntu(enum Distro Distro) {
   return Distro >= UbuntuHardy && Distro <= UbuntuYakkety;
 }
 
-static Distro DetectDistro(const Driver &D, llvm::Triple::ArchType Arch) {
+static Distro DetectDistro(vfs::FileSystem &VFS) {
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> File =
-      llvm::MemoryBuffer::getFile("/etc/lsb-release");
+      VFS.getBufferForFile("/etc/lsb-release");
   if (File) {
     StringRef Data = File.get()->getBuffer();
     SmallVector<StringRef, 16> Lines;
@@ -3876,7 +3921,7 @@ static Distro DetectDistro(const Driver &D, llvm::Triple::ArchType Arch) {
       return Version;
   }
 
-  File = llvm::MemoryBuffer::getFile("/etc/redhat-release");
+  File = VFS.getBufferForFile("/etc/redhat-release");
   if (File) {
     StringRef Data = File.get()->getBuffer();
     if (Data.startswith("Fedora release"))
@@ -3894,29 +3939,59 @@ static Distro DetectDistro(const Driver &D, llvm::Triple::ArchType Arch) {
     return UnknownDistro;
   }
 
-  File = llvm::MemoryBuffer::getFile("/etc/debian_version");
+  File = VFS.getBufferForFile("/etc/debian_version");
   if (File) {
     StringRef Data = File.get()->getBuffer();
-    if (Data[0] == '5')
-      return DebianLenny;
-    else if (Data.startswith("squeeze/sid") || Data[0] == '6')
-      return DebianSqueeze;
-    else if (Data.startswith("wheezy/sid") || Data[0] == '7')
-      return DebianWheezy;
-    else if (Data.startswith("jessie/sid") || Data[0] == '8')
-      return DebianJessie;
-    else if (Data.startswith("stretch/sid") || Data[0] == '9')
-      return DebianStretch;
+    // Contents: < major.minor > or < codename/sid >
+    int MajorVersion;
+    if (!Data.split('.').first.getAsInteger(10, MajorVersion)) {
+      switch (MajorVersion) {
+      case 5:
+        return DebianLenny;
+      case 6:
+        return DebianSqueeze;
+      case 7:
+        return DebianWheezy;
+      case 8:
+        return DebianJessie;
+      case 9:
+        return DebianStretch;
+      default:
+        return UnknownDistro;
+      }
+    }
+    return llvm::StringSwitch<Distro>(Data.split("\n").first)
+        .Case("squeeze/sid", DebianSqueeze)
+        .Case("wheezy/sid", DebianWheezy)
+        .Case("jessie/sid", DebianJessie)
+        .Case("stretch/sid", DebianStretch)
+        .Default(UnknownDistro);
+  }
+
+  File = VFS.getBufferForFile("/etc/SuSE-release");
+  if (File) {
+    StringRef Data = File.get()->getBuffer();
+    SmallVector<StringRef, 8> Lines;
+    Data.split(Lines, "\n");
+    for (const StringRef& Line : Lines) {
+      if (!Line.trim().startswith("VERSION"))
+        continue;
+      std::pair<StringRef, StringRef> SplitLine = Line.split('=');
+      int Version;
+      // OpenSUSE/SLES 10 and older are not supported and not compatible
+      // with our rules, so just treat them as UnknownDistro.
+      if (!SplitLine.second.trim().getAsInteger(10, Version) &&
+          Version > 10)
+        return OpenSUSE;
+      return UnknownDistro;
+    }
     return UnknownDistro;
   }
 
-  if (D.getVFS().exists("/etc/SuSE-release"))
-    return OpenSUSE;
-
-  if (D.getVFS().exists("/etc/exherbo-release"))
+  if (VFS.exists("/etc/exherbo-release"))
     return Exherbo;
 
-  if (D.getVFS().exists("/etc/arch-release"))
+  if (VFS.exists("/etc/arch-release"))
     return ArchLinux;
 
   return UnknownDistro;
@@ -4101,7 +4176,7 @@ Linux::Linux(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
                          GCCInstallation.getTriple().str() + "/bin")
                        .str());
 
-  Distro Distro = DetectDistro(D, Arch);
+  Distro Distro = DetectDistro(D.getVFS());
 
   if (IsOpenSUSE(Distro) || IsUbuntu(Distro)) {
     ExtraOpts.push_back("-z");
@@ -4305,7 +4380,7 @@ std::string Linux::getDynamicLinker(const ArgList &Args) const {
   const llvm::Triple::ArchType Arch = getArch();
   const llvm::Triple &Triple = getTriple();
 
-  const enum Distro Distro = DetectDistro(getDriver(), Arch);
+  const enum Distro Distro = DetectDistro(getDriver().getVFS());
 
   if (Triple.isAndroid())
     return Triple.isArch64Bit() ? "/system/bin/linker64" : "/system/bin/linker";
@@ -5094,18 +5169,13 @@ MyriadToolChain::MyriadToolChain(const Driver &D, const llvm::Triple &Triple,
   }
 
   if (GCCInstallation.isValid()) {
-    // The contents of LibDir are independent of the version of gcc.
-    // This contains libc, libg, libm, libstdc++, libssp.
-    // The 'ma1x00' and 'nofpu' variants are irrelevant.
-    SmallString<128> LibDir(GCCInstallation.getParentLibPath());
-    llvm::sys::path::append(LibDir, "../sparc-myriad-elf/lib");
-    addPathIfExists(D, LibDir, getFilePaths());
-
     // This directory contains crt{i,n,begin,end}.o as well as libgcc.
     // These files are tied to a particular version of gcc.
     SmallString<128> CompilerSupportDir(GCCInstallation.getInstallPath());
     addPathIfExists(D, CompilerSupportDir, getFilePaths());
   }
+  // libstd++ and libc++ must both be found in this one place.
+  addPathIfExists(D, D.Dir + "/../sparc-myriad-elf/lib", getFilePaths());
 }
 
 MyriadToolChain::~MyriadToolChain() {}
@@ -5122,15 +5192,19 @@ void MyriadToolChain::AddClangCXXStdlibIncludeArgs(
       DriverArgs.hasArg(options::OPT_nostdincxx))
     return;
 
-  // Only libstdc++, for now.
-  StringRef LibDir = GCCInstallation.getParentLibPath();
-  const GCCVersion &Version = GCCInstallation.getVersion();
-  StringRef TripleStr = GCCInstallation.getTriple().str();
-  const Multilib &Multilib = GCCInstallation.getMultilib();
-
-  addLibStdCXXIncludePaths(
-      LibDir.str() + "/../" + TripleStr.str() + "/include/c++/" + Version.Text,
-      "", TripleStr, "", "", Multilib.includeSuffix(), DriverArgs, CC1Args);
+  if (GetCXXStdlibType(DriverArgs) == ToolChain::CST_Libcxx) {
+    std::string Path(getDriver().getInstalledDir());
+    Path += "/../include/c++/v1";
+    addSystemInclude(DriverArgs, CC1Args, Path);
+  } else {
+    StringRef LibDir = GCCInstallation.getParentLibPath();
+    const GCCVersion &Version = GCCInstallation.getVersion();
+    StringRef TripleStr = GCCInstallation.getTriple().str();
+    const Multilib &Multilib = GCCInstallation.getMultilib();
+    addLibStdCXXIncludePaths(
+        LibDir.str() + "/../" + TripleStr.str() + "/include/c++/" + Version.Text,
+        "", TripleStr, "", "", Multilib.includeSuffix(), DriverArgs, CC1Args);
+  }
 }
 
 // MyriadToolChain handles several triples:

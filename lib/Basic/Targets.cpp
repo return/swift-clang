@@ -2176,6 +2176,9 @@ public:
       .Case("kaveri",    GK_GFX7)
       .Case("hawaii",    GK_GFX7)
       .Case("mullins",   GK_GFX7)
+      .Case("gfx700",    GK_GFX7)
+      .Case("gfx701",    GK_GFX7)
+      .Case("gfx702",    GK_GFX7)
       .Case("tonga",     GK_GFX8)
       .Case("iceland",   GK_GFX8)
       .Case("carrizo",   GK_GFX8)
@@ -2183,6 +2186,12 @@ public:
       .Case("stoney",    GK_GFX8)
       .Case("polaris10", GK_GFX8)
       .Case("polaris11", GK_GFX8)
+      .Case("gfx800",    GK_GFX8)
+      .Case("gfx801",    GK_GFX8)
+      .Case("gfx802",    GK_GFX8)
+      .Case("gfx803",    GK_GFX8)
+      .Case("gfx804",    GK_GFX8)
+      .Case("gfx810",    GK_GFX8)
       .Default(GK_NONE);
   }
 
@@ -8296,12 +8305,12 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new CloudABITargetInfo<AArch64leTargetInfo>(Triple, Opts);
     case llvm::Triple::FreeBSD:
       return new FreeBSDTargetInfo<AArch64leTargetInfo>(Triple, Opts);
+    case llvm::Triple::Fuchsia:
+      return new FuchsiaTargetInfo<AArch64leTargetInfo>(Triple, Opts);
     case llvm::Triple::Linux:
       return new LinuxTargetInfo<AArch64leTargetInfo>(Triple, Opts);
     case llvm::Triple::NetBSD:
       return new NetBSDTargetInfo<AArch64leTargetInfo>(Triple, Opts);
-    case llvm::Triple::Fuchsia:
-      return new FuchsiaTargetInfo<AArch64leTargetInfo>(Triple, Opts);
     default:
       return new AArch64leTargetInfo(Triple, Opts);
     }
@@ -8310,6 +8319,8 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple,
     switch (os) {
     case llvm::Triple::FreeBSD:
       return new FreeBSDTargetInfo<AArch64beTargetInfo>(Triple, Opts);
+    case llvm::Triple::Fuchsia:
+      return new FuchsiaTargetInfo<AArch64beTargetInfo>(Triple, Opts);
     case llvm::Triple::Linux:
       return new LinuxTargetInfo<AArch64beTargetInfo>(Triple, Opts);
     case llvm::Triple::NetBSD:
@@ -8330,6 +8341,8 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new LinuxTargetInfo<ARMleTargetInfo>(Triple, Opts);
     case llvm::Triple::FreeBSD:
       return new FreeBSDTargetInfo<ARMleTargetInfo>(Triple, Opts);
+    case llvm::Triple::Fuchsia:
+      return new FuchsiaTargetInfo<ARMleTargetInfo>(Triple, Opts);
     case llvm::Triple::NetBSD:
       return new NetBSDTargetInfo<ARMleTargetInfo>(Triple, Opts);
     case llvm::Triple::OpenBSD:
@@ -8366,6 +8379,8 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new LinuxTargetInfo<ARMbeTargetInfo>(Triple, Opts);
     case llvm::Triple::FreeBSD:
       return new FreeBSDTargetInfo<ARMbeTargetInfo>(Triple, Opts);
+    case llvm::Triple::Fuchsia:
+      return new FuchsiaTargetInfo<ARMbeTargetInfo>(Triple, Opts);
     case llvm::Triple::NetBSD:
       return new NetBSDTargetInfo<ARMbeTargetInfo>(Triple, Opts);
     case llvm::Triple::OpenBSD:
@@ -8596,6 +8611,8 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new BitrigI386TargetInfo(Triple, Opts);
     case llvm::Triple::FreeBSD:
       return new FreeBSDTargetInfo<X86_32TargetInfo>(Triple, Opts);
+    case llvm::Triple::Fuchsia:
+      return new FuchsiaTargetInfo<X86_32TargetInfo>(Triple, Opts);
     case llvm::Triple::KFreeBSD:
       return new KFreeBSDTargetInfo<X86_32TargetInfo>(Triple, Opts);
     case llvm::Triple::Minix:
@@ -8651,6 +8668,8 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new BitrigX86_64TargetInfo(Triple, Opts);
     case llvm::Triple::FreeBSD:
       return new FreeBSDTargetInfo<X86_64TargetInfo>(Triple, Opts);
+    case llvm::Triple::Fuchsia:
+      return new FuchsiaTargetInfo<X86_64TargetInfo>(Triple, Opts);
     case llvm::Triple::KFreeBSD:
       return new KFreeBSDTargetInfo<X86_64TargetInfo>(Triple, Opts);
     case llvm::Triple::Solaris:
@@ -8670,8 +8689,6 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new HaikuTargetInfo<X86_64TargetInfo>(Triple, Opts);
     case llvm::Triple::NaCl:
       return new NaClTargetInfo<X86_64TargetInfo>(Triple, Opts);
-    case llvm::Triple::Fuchsia:
-      return new FuchsiaTargetInfo<X86_64TargetInfo>(Triple, Opts);
     case llvm::Triple::PS4:
       return new PS4OSTargetInfo<X86_64TargetInfo>(Triple, Opts);
     default:

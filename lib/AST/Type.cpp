@@ -1081,24 +1081,13 @@ QualType QualType::substObjCTypeArgs(
 
     // Replace an Objective-C type parameter reference with the corresponding
     // type argument.
-    if (const auto *OTPTy = dyn_cast<ObjCTypeParamType>(splitType.Ty)) {
-      if (auto *typeParam = dyn_cast<ObjCTypeParamDecl>(OTPTy->getDecl())) {
+    if (const auto *typedefTy = dyn_cast<TypedefType>(splitType.Ty)) {
+      if (auto *typeParam = dyn_cast<ObjCTypeParamDecl>(typedefTy->getDecl())) {
         // If we have type arguments, use them.
         if (!typeArgs.empty()) {
+          // FIXME: Introduce SubstObjCTypeParamType ?
           QualType argType = typeArgs[typeParam->getIndex()];
-          if (OTPTy->qual_empty())
-            return ctx.getQualifiedType(argType, splitType.Quals);
-
-          // Apply protocol lists if exists.
-          bool hasError;
-          SmallVector<ObjCProtocolDecl*, 8> protocolsVec;
-          protocolsVec.append(OTPTy->qual_begin(),
-                              OTPTy->qual_end());
-          ArrayRef<ObjCProtocolDecl *> protocolsToApply = protocolsVec;
-          QualType resultTy = ctx.applyObjCProtocolQualifiers(argType,
-              protocolsToApply, hasError, true/*allowOnPointerType*/);
-
-          return ctx.getQualifiedType(resultTy, splitType.Quals);
+          return ctx.getQualifiedType(argType, splitType.Quals);
         }
 
         switch (context) {
@@ -2791,6 +2780,15 @@ bool FunctionProtoType::hasDependentExceptionSpec() const {
   return false;
 }
 
+bool FunctionProtoType::hasInstantiationDependentExceptionSpec() const {
+  if (Expr *NE = getNoexceptExpr())
+    return NE->isInstantiationDependent();
+  for (QualType ET : exceptions())
+    if (ET->isInstantiationDependentType())
+      return true;
+  return false;
+}
+
 FunctionProtoType::NoexceptResult
 FunctionProtoType::getNoexceptSpec(const ASTContext &ctx) const {
   ExceptionSpecificationType est = getExceptionSpecType();
@@ -2850,7 +2848,7 @@ bool FunctionProtoType::isTemplateVariadic() const {
 void FunctionProtoType::Profile(llvm::FoldingSetNodeID &ID, QualType Result,
                                 const QualType *ArgTys, unsigned NumParams,
                                 const ExtProtoInfo &epi,
-                                const ASTContext &Context) {
+                                const ASTContext &Context, bool Canonical) {
 
   // We have to be careful not to get ambiguous profile encodings.
   // Note that valid type pointers are never ambiguous with anything else.
@@ -2889,7 +2887,7 @@ void FunctionProtoType::Profile(llvm::FoldingSetNodeID &ID, QualType Result,
       ID.AddPointer(Ex.getAsOpaquePtr());
   } else if (epi.ExceptionSpec.Type == EST_ComputedNoexcept &&
              epi.ExceptionSpec.NoexceptExpr) {
-    epi.ExceptionSpec.NoexceptExpr->Profile(ID, Context, false);
+    epi.ExceptionSpec.NoexceptExpr->Profile(ID, Context, Canonical);
   } else if (epi.ExceptionSpec.Type == EST_Uninstantiated ||
              epi.ExceptionSpec.Type == EST_Unevaluated) {
     ID.AddPointer(epi.ExceptionSpec.SourceDecl->getCanonicalDecl());
@@ -2905,7 +2903,7 @@ void FunctionProtoType::Profile(llvm::FoldingSetNodeID &ID, QualType Result,
 void FunctionProtoType::Profile(llvm::FoldingSetNodeID &ID,
                                 const ASTContext &Ctx) {
   Profile(ID, getReturnType(), param_type_begin(), NumParams, getExtProtoInfo(),
-          Ctx);
+          Ctx, isCanonicalUnqualified());
 }
 
 QualType TypedefType::desugar() const {

@@ -2358,7 +2358,7 @@ static bool CheckMethodOverrideParam(Sema &S,
   }
   if (S.Context.hasSameUnqualifiedType(ImplTy, IfaceTy))
     return true;
-
+  
   if (!Warn)
     return false;
   unsigned DiagID = 
@@ -3857,6 +3857,18 @@ Decl *Sema::ActOnAtEnd(Scope *S, SourceRange AtEnd, ArrayRef<Decl *> allMethods,
       } else if (HasRootClassAttr) {
         // Complain that only root classes may have this attribute.
         Diag(IDecl->getLocation(), diag::err_objc_root_class_subclass);
+      }
+
+      if (const ObjCInterfaceDecl *Super = IDecl->getSuperClass()) {
+        // An interface can subclass another interface with a
+        // objc_subclassing_restricted attribute when it has that attribute as
+        // well (because of interfaces imported from Swift). Therefore we have
+        // to check if we can subclass in the implementation as well.
+        if (IDecl->hasAttr<ObjCSubclassingRestrictedAttr>() &&
+            Super->hasAttr<ObjCSubclassingRestrictedAttr>()) {
+          Diag(IC->getLocation(), diag::err_restricted_superclass_mismatch);
+          Diag(Super->getLocation(), diag::note_class_declared);
+        }
       }
 
       if (LangOpts.ObjCRuntime.isNonFragile()) {

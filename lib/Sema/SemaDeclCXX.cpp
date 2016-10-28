@@ -1279,7 +1279,9 @@ static bool checkMemberDecomposition(Sema &S, ArrayRef<BindingDecl*> Bindings,
                                                  DecompType.getQualifiers());
 
   auto DiagnoseBadNumberOfBindings = [&]() -> bool {
-    unsigned NumFields = std::distance(RD->field_begin(), RD->field_end());
+    unsigned NumFields =
+        std::count_if(RD->field_begin(), RD->field_end(),
+                      [](FieldDecl *FD) { return !FD->isUnnamedBitfield(); });
     assert(Bindings.size() != NumFields);
     S.Diag(Src->getLocation(), diag::err_decomp_decl_wrong_number_bindings)
         << DecompType << (unsigned)Bindings.size() << NumFields
@@ -12322,13 +12324,20 @@ ExprResult Sema::BuildCXXDefaultInitExpr(SourceLocation Loc, FieldDecl *Field) {
     // Lookup can return at most two results: the pattern for the field, or the
     // injected class name of the parent record. No other member can have the
     // same name as the field.
-    assert(!Lookup.empty() && Lookup.size() <= 2 &&
+    // In modules mode, lookup can return multiple results (coming from
+    // different modules).
+    assert((getLangOpts().Modules || (!Lookup.empty() && Lookup.size() <= 2)) &&
            "more than two lookup results for field name");
     FieldDecl *Pattern = dyn_cast<FieldDecl>(Lookup[0]);
     if (!Pattern) {
       assert(isa<CXXRecordDecl>(Lookup[0]) &&
              "cannot have other non-field member with same name");
-      Pattern = cast<FieldDecl>(Lookup[1]);
+      for (auto L : Lookup)
+        if (isa<FieldDecl>(L)) {
+          Pattern = cast<FieldDecl>(L);
+          break;
+        }
+      assert(Pattern && "We must have set the Pattern!");
     }
 
     if (InstantiateInClassInitializer(Loc, Field, Pattern,
@@ -13786,10 +13795,9 @@ NamedDecl *Sema::ActOnFriendFunctionDecl(Scope *S, Declarator &D,
     // template in the translation unit.
     if (functionDeclHasDefaultArgument(FD)) {
       // We can't look at FD->getPreviousDecl() because it may not have been set
-      // if we're in a dependent context. If we get this far with a non-empty
-      // Previous set, we must have a valid previous declaration of this
-      // function.
-      if (!Previous.empty()) {
+      // if we're in a dependent context. If the function is known to be a
+      // redeclaration, we will have narrowed Previous down to the right decl.
+      if (D.isRedeclaration()) {
         Diag(FD->getLocation(), diag::err_friend_decl_with_def_arg_redeclared);
         Diag(Previous.getRepresentativeDecl()->getLocation(),
              diag::note_previous_declaration);

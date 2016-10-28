@@ -2833,21 +2833,21 @@ enum FormatAttrKind {
 /// types.
 static FormatAttrKind getFormatAttrKind(StringRef Format) {
   return llvm::StringSwitch<FormatAttrKind>(Format)
-    // Check for formats that get handled specially.
-    .Case("NSString", NSStringFormat)
-    .Case("CFString", CFStringFormat)
-    .Case("strftime", StrftimeFormat)
+      // Check for formats that get handled specially.
+      .Case("NSString", NSStringFormat)
+      .Case("CFString", CFStringFormat)
+      .Case("strftime", StrftimeFormat)
 
-    // Otherwise, check for supported formats.
-    .Cases("scanf", "printf", "printf0", "strfmon", SupportedFormat)
-    .Cases("cmn_err", "vcmn_err", "zcmn_err", SupportedFormat)
-    .Case("kprintf", SupportedFormat) // OpenBSD.
-    .Case("freebsd_kprintf", SupportedFormat) // FreeBSD.
-    .Case("os_trace", SupportedFormat)
-    .Case("os_log", SupportedFormat)
+      // Otherwise, check for supported formats.
+      .Cases("scanf", "printf", "printf0", "strfmon", SupportedFormat)
+      .Cases("cmn_err", "vcmn_err", "zcmn_err", SupportedFormat)
+      .Case("kprintf", SupportedFormat)         // OpenBSD.
+      .Case("freebsd_kprintf", SupportedFormat) // FreeBSD.
+      .Case("os_trace", SupportedFormat)
+      .Case("os_log", SupportedFormat)
 
-    .Cases("gcc_diag", "gcc_cdiag", "gcc_cxxdiag", "gcc_tdiag", IgnoredFormat)
-    .Default(InvalidFormat);
+      .Cases("gcc_diag", "gcc_cdiag", "gcc_cxxdiag", "gcc_tdiag", IgnoredFormat)
+      .Default(InvalidFormat);
 }
 
 /// Handle __attribute__((init_priority(priority))) attributes based on
@@ -6908,6 +6908,28 @@ static bool ShouldDiagnoseAvailabilityInContext(Sema &S, AvailabilityResult K,
       return true;
     return false;
   };
+
+  // FIXME: This is a temporary workaround! Some existing Apple headers depends
+  // on nested declarations in an @interface having the availability of the
+  // interface when they really shouldn't: they are members of the enclosing
+  // context, and can referenced from there.
+  if (S.OriginalLexicalContext && cast<Decl>(S.OriginalLexicalContext) != Ctx) {
+    auto *OrigCtx = cast<Decl>(S.OriginalLexicalContext);
+    if (CheckContext(OrigCtx))
+      return false;
+
+    // An implementation implicitly has the availability of the interface.
+    if (auto *CatOrImpl = dyn_cast<ObjCImplDecl>(OrigCtx)) {
+      if (const ObjCInterfaceDecl *Interface = CatOrImpl->getClassInterface())
+        if (CheckContext(Interface))
+          return false;
+    }
+    // A category implicitly has the availability of the interface.
+    else if (auto *CatD = dyn_cast<ObjCCategoryDecl>(OrigCtx))
+      if (const ObjCInterfaceDecl *Interface = CatD->getClassInterface())
+        if (CheckContext(Interface))
+          return false;
+  }
 
   do {
     if (CheckContext(Ctx))

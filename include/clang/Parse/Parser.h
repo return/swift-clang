@@ -247,6 +247,11 @@ class Parser : public CodeCompletionHandler {
 
   bool SkipFunctionBodies;
 
+  /// The location of the expression statement that is being parsed right now.
+  /// Used to determine if an expression that is being parsed is a statement or
+  /// just a regular sub-expression.
+  SourceLocation ExprStatementTokLoc;
+
 public:
   Parser(Preprocessor &PP, Sema &Actions, bool SkipFunctionBodies);
   ~Parser() override;
@@ -878,8 +883,8 @@ public:
     StopAtCodeCompletion = 1 << 2 ///< Stop at code completion
   };
 
-  friend LLVM_CONSTEXPR SkipUntilFlags operator|(SkipUntilFlags L,
-                                                 SkipUntilFlags R) {
+  friend constexpr SkipUntilFlags operator|(SkipUntilFlags L,
+                                            SkipUntilFlags R) {
     return static_cast<SkipUntilFlags>(static_cast<unsigned>(L) |
                                        static_cast<unsigned>(R));
   }
