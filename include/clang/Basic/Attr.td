@@ -385,7 +385,7 @@ def Alias : Attr {
   let Spellings = [GCC<"alias">];
   let Args = [StringArgument<"Aliasee">];
   let Subjects = SubjectList<[Function, GlobalVar], ErrorDiag,
-                             "ExpectedFunctionGlobalVarMethodOrProperty">;
+                             "ExpectedFunctionOrGlobalVar">;
   let Documentation = [Undocumented];
 }
 
@@ -814,6 +814,11 @@ def FastCall : InheritableAttr {
   let Documentation = [FastCallDocs];
 }
 
+def RegCall : InheritableAttr {
+  let Spellings = [GCC<"regcall">, Keyword<"__regcall">];
+  let Documentation = [RegCallDocs];
+}
+
 def Final : InheritableAttr {
   let Spellings = [Keyword<"final">, Keyword<"sealed">];
   let Accessors = [Accessor<"isSpelledAsSealed", [Keyword<"sealed">]>];
@@ -1028,6 +1033,12 @@ def NoDuplicate : InheritableAttr {
   let Spellings = [GNU<"noduplicate">, CXX11<"clang", "noduplicate">];
   let Subjects = SubjectList<[Function]>;
   let Documentation = [NoDuplicateDocs];
+}
+
+def Convergent : InheritableAttr {
+  let Spellings = [GNU<"convergent">, CXX11<"clang", "convergent">];
+  let Subjects = SubjectList<[Function]>;
+  let Documentation = [ConvergentDocs];
 }
 
 def NoInline : InheritableAttr {
@@ -1304,7 +1315,7 @@ def ObjCRootClass : InheritableAttr {
 def ObjCSubclassingRestricted : InheritableAttr {
   let Spellings = [GNU<"objc_subclassing_restricted">];
   let Subjects = SubjectList<[ObjCInterface], ErrorDiag>;
-  let Documentation = [Undocumented];
+  let Documentation = [ObjCSubclassingRestrictedDocs];
 }
 
 def ObjCCompleteDefinition : InheritableAttr {
@@ -1464,6 +1475,14 @@ def SwiftSuppressFactoryAsInit : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+def SwiftImportPropertyAsAccessors : InheritableAttr { 
+  // This attribute has no spellings as it is only ever created implicitly
+  // from API notes.
+  let Spellings = [];
+  let SemaHandler = 0;
+  let Documentation = [Undocumented];
+}
+
 def ReqdWorkGroupSize : InheritableAttr {
   let Spellings = [GNU<"reqd_work_group_size">];
   let Args = [UnsignedArgument<"XDim">, UnsignedArgument<"YDim">,
@@ -1619,7 +1638,7 @@ def Target : InheritableAttr {
 def TransparentUnion : InheritableAttr {
   let Spellings = [GCC<"transparent_union">];
 //  let Subjects = SubjectList<[Record, TypedefName]>;
-  let Documentation = [Undocumented];
+  let Documentation = [TransparentUnionDocs];
   let LangOpts = [COnly];
 }
 
@@ -1806,7 +1825,7 @@ def NoSanitizeSpecific : InheritableAttr {
                    GCC<"no_sanitize_thread">,
                    GNU<"no_sanitize_memory">];
   let Subjects = SubjectList<[Function, GlobalVar], ErrorDiag,
-        "ExpectedFunctionGlobalVarMethodOrProperty">;
+        "ExpectedFunctionOrGlobalVar">;
   let Documentation = [NoSanitizeAddressDocs, NoSanitizeThreadDocs,
                        NoSanitizeMemoryDocs];
   let ASTNode = 0;

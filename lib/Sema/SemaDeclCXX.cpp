@@ -6657,8 +6657,13 @@ bool SpecialMemberDeletionInfo::shouldDeleteForField(FieldDecl *FD) {
 bool SpecialMemberDeletionInfo::shouldDeleteForAllConstMembers() {
   // This is a silly definition, because it gives an empty union a deleted
   // default constructor. Don't do that.
-  if (CSM == Sema::CXXDefaultConstructor && inUnion() && AllFieldsAreConst &&
-      !MD->getParent()->field_empty()) {
+  if (CSM == Sema::CXXDefaultConstructor && inUnion() && AllFieldsAreConst) {
+    bool AnyFields = false;
+    for (auto *F : MD->getParent()->fields())
+      if ((AnyFields = !F->isUnnamedBitfield()))
+        break;
+    if (!AnyFields)
+      return false;
     if (Diagnose)
       S.Diag(MD->getParent()->getLocation(),
              diag::note_deleted_default_ctor_all_const)
@@ -12760,6 +12765,9 @@ bool Sema::CheckLiteralOperatorDeclaration(FunctionDecl *FnDecl) {
 
   if (FnDecl->isExternC()) {
     Diag(FnDecl->getLocation(), diag::err_literal_operator_extern_c);
+    if (const LinkageSpecDecl *LSD =
+            FnDecl->getDeclContext()->getExternCContext())
+      Diag(LSD->getExternLoc(), diag::note_extern_c_begins_here);
     return true;
   }
 
@@ -13853,7 +13861,7 @@ void Sema::SetDeclDeleted(Decl *Dcl, SourceLocation DelLoc) {
 
   // See if we're deleting a function which is already known to override a
   // non-deleted virtual function.
-  if (const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(Fn)) {
+  if (CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(Fn)) {
     bool IssuedDiagnostic = false;
     for (CXXMethodDecl::method_iterator I = MD->begin_overridden_methods(),
                                         E = MD->end_overridden_methods();
@@ -13866,6 +13874,11 @@ void Sema::SetDeclDeleted(Decl *Dcl, SourceLocation DelLoc) {
         Diag((*I)->getLocation(), diag::note_overridden_virtual_function);
       }
     }
+    // If this function was implicitly deleted because it was defaulted,
+    // explain why it was deleted.
+    if (IssuedDiagnostic && MD->isDefaulted())
+      ShouldDeleteSpecialMember(MD, getSpecialMember(MD), nullptr,
+                                /*Diagnose*/true);
   }
 
   // C++11 [basic.start.main]p3:
@@ -13873,6 +13886,9 @@ void Sema::SetDeclDeleted(Decl *Dcl, SourceLocation DelLoc) {
   if (Fn->isMain())
     Diag(DelLoc, diag::err_deleted_main);
 
+  // C++11 [dcl.fct.def.delete]p4:
+  //  A deleted function is implicitly inline.
+  Fn->setImplicitlyInline();
   Fn->setDeletedAsWritten();
 }
 

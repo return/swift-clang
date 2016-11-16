@@ -1249,6 +1249,17 @@ bool CursorVisitor::VisitStaticAssertDecl(StaticAssertDecl *D) {
   return false;
 }
 
+bool CursorVisitor::VisitFriendDecl(FriendDecl *D) {
+  if (NamedDecl *FriendD = D->getFriendDecl()) {
+    if (Visit(MakeCXCursor(FriendD, TU, RegionOfInterest)))
+      return true;
+  } else if (TypeSourceInfo *TI = D->getFriendType()) {
+    if (Visit(TI->getTypeLoc()))
+      return true;
+  }
+  return false;
+}
+
 bool CursorVisitor::VisitDeclarationNameInfo(DeclarationNameInfo Name) {
   switch (Name.getName().getNameKind()) {
   case clang::DeclarationName::Identifier:
@@ -4923,6 +4934,8 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
       return cxstring::createRef("TypeAliasTemplateDecl");
   case CXCursor_StaticAssert:
       return cxstring::createRef("StaticAssert");
+  case CXCursor_FriendDecl:
+    return cxstring::createRef("FriendDecl");
   }
 
   llvm_unreachable("Unhandled CXCursorKind");
@@ -6143,7 +6156,7 @@ static void getTokens(ASTUnit *CXXUnit, SourceRange Range,
     }
     CXTokens.push_back(CXTok);
     previousWasAt = Tok.is(tok::at);
-  } while (Lex.getBufferLocation() <= EffectiveBufferEnd);
+  } while (Lex.getBufferLocation() < EffectiveBufferEnd);
 }
 
 void clang_tokenize(CXTranslationUnit TU, CXSourceRange Range,
@@ -7748,7 +7761,7 @@ CXTUResourceUsage clang_getCXTUResourceUsage(CXTranslationUnit TU) {
   CXTUResourceUsage usage = { (void*) entries.get(),
                             (unsigned) entries->size(),
                             !entries->empty() ? &(*entries)[0] : nullptr };
-  entries.release();
+  (void)entries.release();
   return usage;
 }
 

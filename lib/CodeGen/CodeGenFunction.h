@@ -982,6 +982,35 @@ private:
   };
   SmallVector<BreakContinue, 8> BreakContinueStack;
 
+  /// Data for exit block for proper support of OpenMP cancellation constructs.
+  struct OMPCancel {
+    JumpDest ExitBlock;
+    llvm::function_ref<void(CodeGenFunction &CGF)> CodeGen;
+    OMPCancel() : CodeGen([](CodeGenFunction &CGF) {}) {}
+  };
+  SmallVector<OMPCancel, 8> OMPCancelStack;
+
+  /// Controls insertion of cancellation exit blocks in worksharing constructs.
+  class OMPCancelStackRAII {
+    CodeGenFunction &CGF;
+
+  public:
+    OMPCancelStackRAII(CodeGenFunction &CGF) : CGF(CGF) {
+      CGF.OMPCancelStack.push_back({});
+    }
+    ~OMPCancelStackRAII() {
+      if (CGF.HaveInsertPoint() &&
+          CGF.OMPCancelStack.back().ExitBlock.isValid()) {
+        auto CJD = CGF.getJumpDestInCurrentScope("cancel.cont");
+        CGF.EmitBranchThroughCleanup(CJD);
+        CGF.EmitBlock(CGF.OMPCancelStack.back().ExitBlock.getBlock());
+        CGF.OMPCancelStack.back().CodeGen(CGF);
+        CGF.EmitBranchThroughCleanup(CJD);
+        CGF.EmitBlock(CJD.getBlock());
+      }
+    }
+  };
+
   CodeGenPGO PGO;
 
   /// Calculate branch weights appropriate for PGO data
@@ -2113,6 +2142,10 @@ public:
                                       OffsetValue);
   }
 
+  /// Converts Location to a DebugLoc, if debug information is enabled.
+  llvm::DebugLoc SourceLocToDebugLoc(SourceLocation Location);
+
+
   //===--------------------------------------------------------------------===//
   //                            Declaration Emission
   //===--------------------------------------------------------------------===//
@@ -2311,6 +2344,7 @@ public:
   void EmitObjCAtSynchronizedStmt(const ObjCAtSynchronizedStmt &S);
   void EmitObjCAutoreleasePoolStmt(const ObjCAutoreleasePoolStmt &S);
 
+  void EmitCoroutineBody(const CoroutineBodyStmt &S);
   RValue EmitCoroutineIntrinsic(const CallExpr *E, unsigned int IID);
 
   void EnterCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock = false);

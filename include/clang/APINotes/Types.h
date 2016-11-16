@@ -297,6 +297,9 @@ class VariableInfo : public CommonEntityInfo {
   /// has been audited.
   unsigned Nullable : 2;
 
+  /// The C type of the variable, as a string.
+  std::string Type;
+
 public:
   VariableInfo()
     : CommonEntityInfo(),
@@ -315,10 +318,14 @@ public:
     Nullable = static_cast<unsigned>(kind);
   }
 
+  const std::string &getType() const { return Type; }
+  void setType(const std::string &type) { Type = type; }
+
   friend bool operator==(const VariableInfo &lhs, const VariableInfo &rhs) {
     return static_cast<const CommonEntityInfo &>(lhs) == rhs &&
            lhs.NullabilityAudited == rhs.NullabilityAudited &&
-           lhs.Nullable == rhs.Nullable;
+           lhs.Nullable == rhs.Nullable &&
+           lhs.Type == rhs.Type;
   }
 
   friend bool operator!=(const VariableInfo &lhs, const VariableInfo &rhs) {
@@ -330,18 +337,27 @@ public:
     static_cast<CommonEntityInfo &>(lhs) |= rhs;
     if (!lhs.NullabilityAudited && rhs.NullabilityAudited)
       lhs.setNullabilityAudited(*rhs.getNullability());
+    if (lhs.Type.empty() && !rhs.Type.empty())
+      lhs.Type = rhs.Type;
     return lhs;
   }
 };
 
 /// Describes API notes data for an Objective-C property.
 class ObjCPropertyInfo : public VariableInfo {
+  unsigned SwiftImportAsAccessorsSpecified : 1;
+  unsigned SwiftImportAsAccessors : 1;
+
 public:
-  ObjCPropertyInfo() : VariableInfo() { }
+  ObjCPropertyInfo()
+      : VariableInfo(), SwiftImportAsAccessorsSpecified(false),
+        SwiftImportAsAccessors(false) {}
 
   /// Merge class-wide information into the given property.
   friend ObjCPropertyInfo &operator|=(ObjCPropertyInfo &lhs,
                                       const ObjCContextInfo &rhs) {
+    static_cast<VariableInfo &>(lhs) |= rhs;
+
     // Merge nullability.
     if (!lhs.getNullability()) {
       if (auto nullable = rhs.getDefaultNullability()) {
@@ -349,6 +365,32 @@ public:
       }
     }
 
+    return lhs;
+  }
+
+  Optional<bool> getSwiftImportAsAccessors() const {
+    if (SwiftImportAsAccessorsSpecified)
+      return SwiftImportAsAccessors;
+    return None;
+  }
+  void setSwiftImportAsAccessors(Optional<bool> value) {
+    if (value.hasValue()) {
+      SwiftImportAsAccessorsSpecified = true;
+      SwiftImportAsAccessors = value.getValue();
+    } else {
+      SwiftImportAsAccessorsSpecified = false;
+      SwiftImportAsAccessors = false;
+    }
+  }
+
+  friend ObjCPropertyInfo &operator|=(ObjCPropertyInfo &lhs,
+                                      const ObjCPropertyInfo &rhs) {
+    lhs |= static_cast<const VariableInfo &>(rhs);
+    if (!lhs.SwiftImportAsAccessorsSpecified &&
+        rhs.SwiftImportAsAccessorsSpecified) {
+      lhs.SwiftImportAsAccessorsSpecified = true;
+      lhs.SwiftImportAsAccessors = rhs.SwiftImportAsAccessors;
+    }
     return lhs;
   }
 };
@@ -431,6 +473,9 @@ public:
   //  of the parameters.
   uint64_t NullabilityPayload = 0;
 
+  /// The result type of this function, as a C type.
+  std::string ResultType;
+
   /// The function parameters.
   std::vector<ParamInfo> Params;
 
@@ -494,7 +539,9 @@ public:
     return static_cast<const CommonEntityInfo &>(lhs) == rhs &&
            lhs.NullabilityAudited == rhs.NullabilityAudited &&
            lhs.NumAdjustedNullable == rhs.NumAdjustedNullable &&
-           lhs.NullabilityPayload == rhs.NullabilityPayload;
+           lhs.NullabilityPayload == rhs.NullabilityPayload &&
+           lhs.ResultType == rhs.ResultType &&
+           lhs.Params == rhs.Params;
   }
 
   friend bool operator!=(const FunctionInfo &lhs, const FunctionInfo &rhs) {

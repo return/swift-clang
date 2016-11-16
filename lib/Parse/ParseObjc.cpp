@@ -371,7 +371,8 @@ Decl *Parser::ParseObjCAtInterfaceDeclaration(SourceLocation AtLoc,
   }
 
   if (Tok.isNot(tok::less))
-    Actions.ActOnTypedefedProtocols(protocols, superClassId, superClassLoc);
+    Actions.ActOnTypedefedProtocols(protocols, protocolLocs,
+                                    superClassId, superClassLoc);
   
   Decl *ClsType =
     Actions.ActOnStartClassInterface(getCurScope(), AtLoc, nameId, nameLoc, 
@@ -1038,7 +1039,7 @@ IdentifierInfo *Parser::ParseObjCSelectorPiece(SourceLocation &SelectorLoc) {
   case tok::caretequal: {
     std::string ThisTok(PP.getSpelling(Tok));
     if (isLetter(ThisTok[0])) {
-      IdentifierInfo *II = &PP.getIdentifierTable().get(ThisTok.data());
+      IdentifierInfo *II = &PP.getIdentifierTable().get(ThisTok);
       Tok.setKind(tok::identifier);
       SelectorLoc = ConsumeToken();
       return II;

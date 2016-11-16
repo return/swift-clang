@@ -25,6 +25,7 @@
 #include "clang/Sema/PrettyDeclStackTrace.h"
 #include "clang/Sema/Scope.h"
 #include "clang/Sema/SemaDiagnostic.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -333,10 +334,10 @@ unsigned Parser::ParseAttributeArgsCommon(
 
     // Parse the non-empty comma-separated list of expressions.
     do {
-      std::unique_ptr<EnterExpressionEvaluationContext> Unevaluated;
-      if (attributeParsedArgsUnevaluated(*AttrName))
-        Unevaluated.reset(
-            new EnterExpressionEvaluationContext(Actions, Sema::Unevaluated));
+      bool ShouldEnter = attributeParsedArgsUnevaluated(*AttrName);
+      EnterExpressionEvaluationContext Unevaluated(
+          Actions, Sema::Unevaluated, /*LambdaContextDecl=*/nullptr,
+          /*IsDecltype=*/false, ShouldEnter);
 
       ExprResult ArgExpr(
           Actions.CorrectDelayedTyposInExpr(ParseAssignmentExpression()));
@@ -402,13 +403,13 @@ void Parser::ParseGNUAttributeArgs(IdentifierInfo *AttrName,
 
   // These may refer to the function arguments, but need to be parsed early to
   // participate in determining whether it's a redeclaration.
-  std::unique_ptr<ParseScope> PrototypeScope;
+  llvm::Optional<ParseScope> PrototypeScope;
   if (normalizeAttrName(AttrName->getName()) == "enable_if" &&
       D && D->isFunctionDeclarator()) {
     DeclaratorChunk::FunctionTypeInfo FTI = D->getFunctionTypeInfo();
-    PrototypeScope.reset(new ParseScope(this, Scope::FunctionPrototypeScope |
-                                        Scope::FunctionDeclarationScope |
-                                        Scope::DeclScope));
+    PrototypeScope.emplace(this, Scope::FunctionPrototypeScope |
+                                     Scope::FunctionDeclarationScope |
+                                     Scope::DeclScope);
     for (unsigned i = 0; i != FTI.NumParams; ++i) {
       ParmVarDecl *Param = cast<ParmVarDecl>(FTI.Params[i].Param);
       Actions.ActOnReenterCXXMethodParameter(getCurScope(), Param);
@@ -641,6 +642,7 @@ void Parser::ParseMicrosoftTypeAttributes(ParsedAttributes &attrs) {
     case tok::kw___fastcall:
     case tok::kw___stdcall:
     case tok::kw___thiscall:
+    case tok::kw___regcall:
     case tok::kw___cdecl:
     case tok::kw___vectorcall:
     case tok::kw___ptr64:
@@ -3188,6 +3190,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
     case tok::kw___stdcall:
     case tok::kw___fastcall:
     case tok::kw___thiscall:
+    case tok::kw___regcall:
     case tok::kw___vectorcall:
       ParseMicrosoftTypeAttributes(DS.getAttributes());
       continue;
@@ -4505,6 +4508,7 @@ bool Parser::isTypeSpecifierQualifier() {
   case tok::kw___stdcall:
   case tok::kw___fastcall:
   case tok::kw___thiscall:
+  case tok::kw___regcall:
   case tok::kw___vectorcall:
   case tok::kw___w64:
   case tok::kw___ptr64:
@@ -4689,6 +4693,7 @@ bool Parser::isDeclarationSpecifier(bool DisambiguatingWithExpression) {
   case tok::kw___stdcall:
   case tok::kw___fastcall:
   case tok::kw___thiscall:
+  case tok::kw___regcall:
   case tok::kw___vectorcall:
   case tok::kw___w64:
   case tok::kw___sptr:
@@ -4927,6 +4932,7 @@ void Parser::ParseTypeQualifierListOpt(DeclSpec &DS, unsigned AttrReqs,
     case tok::kw___stdcall:
     case tok::kw___fastcall:
     case tok::kw___thiscall:
+    case tok::kw___regcall:
     case tok::kw___vectorcall:
       if (AttrReqs & AR_DeclspecAttributesParsed) {
         ParseMicrosoftTypeAttributes(DS.getAttributes());
@@ -6295,8 +6301,7 @@ void Parser::ParseBracketDeclarator(Declarator &D) {
 
   T.consumeClose();
 
-  ParsedAttributes attrs(AttrFactory);
-  MaybeParseCXX11Attributes(attrs);
+  MaybeParseCXX11Attributes(DS.getAttributes());
 
   // Remember that we parsed a array type, and remember its features.
   D.AddTypeInfo(DeclaratorChunk::getArray(DS.getTypeQualifiers(),
@@ -6304,7 +6309,7 @@ void Parser::ParseBracketDeclarator(Declarator &D) {
                                           NumElements.get(),
                                           T.getOpenLocation(),
                                           T.getCloseLocation()),
-                attrs, T.getCloseLocation());
+                DS.getAttributes(), T.getCloseLocation());
 }
 
 /// Diagnose brackets before an identifier.
@@ -6577,4 +6582,69 @@ bool Parser::TryAltiVecTokenOutOfLine(DeclSpec &DS, SourceLocation Loc,
     return true;
   }
   return false;
+}
+
+TypeResult Parser::parseTypeFromString(StringRef typeStr, StringRef context,
+                                       SourceLocation includeLoc) {
+  // Consume (unexpanded) tokens up to the end-of-directive.
+  SmallVector<Token, 4> tokens;
+  {
+    // Create a new buffer from which we will parse the type.
+    auto &sourceMgr = PP.getSourceManager();
+    FileID fileID = sourceMgr.createFileID(
+                      llvm::MemoryBuffer::getMemBufferCopy(typeStr, context),
+                      SrcMgr::C_User, 0, 0, includeLoc);
+
+    // Form a new lexer that references the buffer.
+    Lexer lexer(fileID, sourceMgr.getBuffer(fileID), PP);
+    lexer.setParsingPreprocessorDirective(true);
+    lexer.setIsPragmaLexer(true);
+
+    // Lex the tokens from that buffer.
+    Token tok;
+    do {
+      lexer.Lex(tok);
+      tokens.push_back(tok);
+    } while (tok.isNot(tok::eod));
+  }
+
+  // Replace the "eod" token with an "eof" token identifying the end of
+  // the provided string.
+  Token &endToken = tokens.back();
+  endToken.startToken();
+  endToken.setKind(tok::eof);
+  endToken.setLocation(Tok.getLocation());
+  endToken.setEofData(typeStr.data());
+
+  // Add the current token back.
+  tokens.push_back(Tok);
+
+  // Enter the tokens into the token stream.
+  PP.EnterTokenStream(tokens, /*DisableMacroExpansion=*/false);
+
+  // Consume the current token so that we'll start parsing the tokens we
+  // added to the stream.
+  ConsumeAnyToken();
+
+  // Enter a new scope.
+  ParseScope localScope(this, 0);
+
+  // Parse the type.
+  TypeResult result = ParseTypeName(nullptr);
+
+  // Check if we parsed the whole thing.
+  if (result.isUsable() &&
+      (Tok.isNot(tok::eof) || Tok.getEofData() != typeStr.data())) {
+    Diag(Tok.getLocation(), diag::err_type_unparsed);
+  }
+
+  // There could be leftover tokens (e.g. because of an error).
+  // Skip through until we reach the 'end of directive' token.
+  while (Tok.isNot(tok::eof))
+    ConsumeAnyToken();
+
+  // Consume the end token.
+  if (Tok.is(tok::eof) && Tok.getEofData() == typeStr.data())
+    ConsumeAnyToken();
+  return result;
 }

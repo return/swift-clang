@@ -189,7 +189,7 @@ static llvm::Constant *buildBlockDescriptor(CodeGenModule &CGM,
  */
 
 /// The number of fields in a block header.
-const unsigned BlockHeaderSize = 5;
+const static unsigned BlockHeaderSize = 5;
 
 namespace {
   /// A chunk of data that we actually have to capture in the block.
@@ -1052,10 +1052,10 @@ Address CodeGenFunction::GetAddrOfBlockDecl(const VarDecl *variable,
 }
 
 llvm::Constant *
-CodeGenModule::GetAddrOfGlobalBlock(const BlockExpr *blockExpr,
-                                    const char *name) {
-  CGBlockInfo blockInfo(blockExpr->getBlockDecl(), name);
-  blockInfo.BlockExpression = blockExpr;
+CodeGenModule::GetAddrOfGlobalBlock(const BlockExpr *BE,
+                                    StringRef Name) {
+  CGBlockInfo blockInfo(BE->getBlockDecl(), Name);
+  blockInfo.BlockExpression = BE;
 
   // Compute information about the layout, etc., of this block.
   computeBlockInfo(*this, nullptr, blockInfo);

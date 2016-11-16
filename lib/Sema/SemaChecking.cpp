@@ -315,8 +315,18 @@ static bool SemaOpenCLBuiltinKernelWorkGroupSize(Sema &S, CallExpr *TheCall) {
   return checkOpenCLBlockArgs(S, BlockArg);
 }
 
+/// Diagnose integer type and any valid implicit convertion to it.
+static bool checkOpenCLEnqueueIntType(Sema &S, Expr *E,
+                                      const QualType &IntType);
+
 static bool checkOpenCLEnqueueLocalSizeArgs(Sema &S, CallExpr *TheCall,
-                                            unsigned Start, unsigned End);
+                                            unsigned Start, unsigned End) {
+  bool IllegalParams = false;
+  for (unsigned I = Start; I <= End; ++I)
+    IllegalParams |= checkOpenCLEnqueueIntType(S, TheCall->getArg(I),
+                                              S.Context.getSizeType());
+  return IllegalParams;
+}
 
 /// OpenCL v2.0, s6.13.17.1 - Check that sizes are provided for all
 /// 'local void*' parameter of passed block.
@@ -451,16 +461,20 @@ static bool SemaOpenCLBuiltinEnqueueKernel(Sema &S, CallExpr *TheCall) {
     Expr *Arg4 = TheCall->getArg(4);
     Expr *Arg5 = TheCall->getArg(5);
 
-    // Fith argument is always passed as pointers to clk_event_t.
-    if (!Arg4->getType()->getPointeeOrArrayElementType()->isClkEventT()) {
+    // Fifth argument is always passed as a pointer to clk_event_t.
+    if (!Arg4->isNullPointerConstant(S.Context,
+                                     Expr::NPC_ValueDependentIsNotNull) &&
+        !Arg4->getType()->getPointeeOrArrayElementType()->isClkEventT()) {
       S.Diag(TheCall->getArg(4)->getLocStart(),
              diag::err_opencl_enqueue_kernel_expected_type)
           << S.Context.getPointerType(S.Context.OCLClkEventTy);
       return true;
     }
 
-    // Sixth argument is always passed as pointers to clk_event_t.
-    if (!(Arg5->getType()->isPointerType() &&
+    // Sixth argument is always passed as a pointer to clk_event_t.
+    if (!Arg5->isNullPointerConstant(S.Context,
+                                     Expr::NPC_ValueDependentIsNotNull) &&
+        !(Arg5->getType()->isPointerType() &&
           Arg5->getType()->getPointeeType()->isClkEventT())) {
       S.Diag(TheCall->getArg(5)->getLocStart(),
              diag::err_opencl_enqueue_kernel_expected_type)
@@ -789,6 +803,10 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
     // SemaBuiltinShuffleVector guts it, but then doesn't release it.
   case Builtin::BI__builtin_prefetch:
     if (SemaBuiltinPrefetch(TheCall))
+      return ExprError();
+    break;
+  case Builtin::BI__builtin_alloca_with_align:
+    if (SemaBuiltinAllocaWithAlign(TheCall))
       return ExprError();
     break;
   case Builtin::BI__assume:
@@ -1810,8 +1828,17 @@ bool Sema::CheckX86BuiltinRoundingOrSAE(unsigned BuiltinID, CallExpr *TheCall) {
   case X86::BI__builtin_ia32_cmpps512_mask:
   case X86::BI__builtin_ia32_cmpsd_mask:
   case X86::BI__builtin_ia32_cmpss_mask:
+  case X86::BI__builtin_ia32_cvtss2sd_round_mask:
   case X86::BI__builtin_ia32_getexpsd128_round_mask:
   case X86::BI__builtin_ia32_getexpss128_round_mask:
+  case X86::BI__builtin_ia32_maxpd512_mask:
+  case X86::BI__builtin_ia32_maxps512_mask:
+  case X86::BI__builtin_ia32_maxsd_round_mask:
+  case X86::BI__builtin_ia32_maxss_round_mask:
+  case X86::BI__builtin_ia32_minpd512_mask:
+  case X86::BI__builtin_ia32_minps512_mask:
+  case X86::BI__builtin_ia32_minsd_round_mask:
+  case X86::BI__builtin_ia32_minss_round_mask:
   case X86::BI__builtin_ia32_rcp28sd_round_mask:
   case X86::BI__builtin_ia32_rcp28ss_round_mask:
   case X86::BI__builtin_ia32_reducepd512_mask:
@@ -1851,6 +1878,9 @@ bool Sema::CheckX86BuiltinRoundingOrSAE(unsigned BuiltinID, CallExpr *TheCall) {
     ArgNum = 1;
     HasRC = true;
     break;
+  case X86::BI__builtin_ia32_cvtsi2sd64:
+  case X86::BI__builtin_ia32_cvtsi2ss32:
+  case X86::BI__builtin_ia32_cvtsi2ss64:
   case X86::BI__builtin_ia32_cvtusi2sd64:
   case X86::BI__builtin_ia32_cvtusi2ss32:
   case X86::BI__builtin_ia32_cvtusi2ss64:
@@ -1868,6 +1898,8 @@ bool Sema::CheckX86BuiltinRoundingOrSAE(unsigned BuiltinID, CallExpr *TheCall) {
   case X86::BI__builtin_ia32_cvtqq2ps512_mask:
   case X86::BI__builtin_ia32_cvtuqq2pd512_mask:
   case X86::BI__builtin_ia32_cvtuqq2ps512_mask:
+  case X86::BI__builtin_ia32_sqrtpd512_mask:
+  case X86::BI__builtin_ia32_sqrtps512_mask:
     ArgNum = 3;
     HasRC = true;
     break;
@@ -1893,6 +1925,9 @@ bool Sema::CheckX86BuiltinRoundingOrSAE(unsigned BuiltinID, CallExpr *TheCall) {
   case X86::BI__builtin_ia32_scalefss_round_mask:
   case X86::BI__builtin_ia32_getmantpd512_mask:
   case X86::BI__builtin_ia32_getmantps512_mask:
+  case X86::BI__builtin_ia32_cvtsd2ss_round_mask:
+  case X86::BI__builtin_ia32_sqrtsd_round_mask:
+  case X86::BI__builtin_ia32_sqrtss_round_mask:
   case X86::BI__builtin_ia32_vfmaddpd512_mask:
   case X86::BI__builtin_ia32_vfmaddpd512_mask3:
   case X86::BI__builtin_ia32_vfmaddpd512_maskz:
@@ -1971,42 +2006,14 @@ bool Sema::CheckX86BuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
   switch (BuiltinID) {
   default:
     return false;
-  case X86::BI__builtin_ia32_extractf64x4_mask:
-  case X86::BI__builtin_ia32_extracti64x4_mask:
-  case X86::BI__builtin_ia32_extractf32x8_mask:
-  case X86::BI__builtin_ia32_extracti32x8_mask:
-  case X86::BI__builtin_ia32_extractf64x2_256_mask:
-  case X86::BI__builtin_ia32_extracti64x2_256_mask:
-  case X86::BI__builtin_ia32_extractf32x4_256_mask:
-  case X86::BI__builtin_ia32_extracti32x4_256_mask:
-    i = 1; l = 0; u = 1;
-    break;
   case X86::BI_mm_prefetch:
-  case X86::BI__builtin_ia32_extractf32x4_mask:
-  case X86::BI__builtin_ia32_extracti32x4_mask:
-  case X86::BI__builtin_ia32_extractf64x2_512_mask:
-  case X86::BI__builtin_ia32_extracti64x2_512_mask:
     i = 1; l = 0; u = 3;
-    break;
-  case X86::BI__builtin_ia32_insertf32x8_mask:
-  case X86::BI__builtin_ia32_inserti32x8_mask:
-  case X86::BI__builtin_ia32_insertf64x4_mask:
-  case X86::BI__builtin_ia32_inserti64x4_mask:
-  case X86::BI__builtin_ia32_insertf64x2_256_mask:
-  case X86::BI__builtin_ia32_inserti64x2_256_mask:
-  case X86::BI__builtin_ia32_insertf32x4_256_mask:
-  case X86::BI__builtin_ia32_inserti32x4_256_mask:
-    i = 2; l = 0; u = 1;
     break;
   case X86::BI__builtin_ia32_sha1rnds4:
   case X86::BI__builtin_ia32_shuf_f32x4_256_mask:
   case X86::BI__builtin_ia32_shuf_f64x2_256_mask:
   case X86::BI__builtin_ia32_shuf_i32x4_256_mask:
   case X86::BI__builtin_ia32_shuf_i64x2_256_mask:
-  case X86::BI__builtin_ia32_insertf64x2_512_mask:
-  case X86::BI__builtin_ia32_inserti64x2_512_mask:
-  case X86::BI__builtin_ia32_insertf32x4_mask:
-  case X86::BI__builtin_ia32_inserti32x4_mask:
     i = 2; l = 0; u = 3;
     break;
   case X86::BI__builtin_ia32_vpermil2pd:
@@ -2114,33 +2121,6 @@ bool Sema::CheckX86BuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
   case X86::BI__builtin_ia32_prord256_mask:
   case X86::BI__builtin_ia32_prorq128_mask:
   case X86::BI__builtin_ia32_prorq256_mask:
-  case X86::BI__builtin_ia32_psllwi512_mask:
-  case X86::BI__builtin_ia32_psllwi128_mask:
-  case X86::BI__builtin_ia32_psllwi256_mask:
-  case X86::BI__builtin_ia32_psrldi128_mask:
-  case X86::BI__builtin_ia32_psrldi256_mask:
-  case X86::BI__builtin_ia32_psrldi512_mask:
-  case X86::BI__builtin_ia32_psrlqi128_mask:
-  case X86::BI__builtin_ia32_psrlqi256_mask:
-  case X86::BI__builtin_ia32_psrlqi512_mask:
-  case X86::BI__builtin_ia32_psrawi512_mask:
-  case X86::BI__builtin_ia32_psrawi128_mask:
-  case X86::BI__builtin_ia32_psrawi256_mask:
-  case X86::BI__builtin_ia32_psrlwi512_mask:
-  case X86::BI__builtin_ia32_psrlwi128_mask:
-  case X86::BI__builtin_ia32_psrlwi256_mask:
-  case X86::BI__builtin_ia32_psradi128_mask:
-  case X86::BI__builtin_ia32_psradi256_mask:
-  case X86::BI__builtin_ia32_psradi512_mask:
-  case X86::BI__builtin_ia32_psraqi128_mask:
-  case X86::BI__builtin_ia32_psraqi256_mask:
-  case X86::BI__builtin_ia32_psraqi512_mask:
-  case X86::BI__builtin_ia32_pslldi128_mask:
-  case X86::BI__builtin_ia32_pslldi256_mask:
-  case X86::BI__builtin_ia32_pslldi512_mask:
-  case X86::BI__builtin_ia32_psllqi128_mask:
-  case X86::BI__builtin_ia32_psllqi256_mask:
-  case X86::BI__builtin_ia32_psllqi512_mask:
   case X86::BI__builtin_ia32_fpclasspd128_mask:
   case X86::BI__builtin_ia32_fpclasspd256_mask:
   case X86::BI__builtin_ia32_fpclassps128_mask:
@@ -3929,6 +3909,42 @@ bool Sema::SemaBuiltinAssume(CallExpr *TheCall) {
     Diag(Arg->getLocStart(), diag::warn_assume_side_effects)
       << Arg->getSourceRange()
       << cast<FunctionDecl>(TheCall->getCalleeDecl())->getIdentifier();
+
+  return false;
+}
+
+/// Handle __builtin_alloca_with_align. This is declared
+/// as (size_t, size_t) where the second size_t must be a power of 2 greater
+/// than 8.
+bool Sema::SemaBuiltinAllocaWithAlign(CallExpr *TheCall) {
+  // The alignment must be a constant integer.
+  Expr *Arg = TheCall->getArg(1);
+
+  // We can't check the value of a dependent argument.
+  if (!Arg->isTypeDependent() && !Arg->isValueDependent()) {
+    if (const auto *UE =
+            dyn_cast<UnaryExprOrTypeTraitExpr>(Arg->IgnoreParenImpCasts()))
+      if (UE->getKind() == UETT_AlignOf)
+        Diag(TheCall->getLocStart(), diag::warn_alloca_align_alignof)
+          << Arg->getSourceRange();
+
+    llvm::APSInt Result = Arg->EvaluateKnownConstInt(Context);
+
+    if (!Result.isPowerOf2())
+      return Diag(TheCall->getLocStart(),
+                  diag::err_alignment_not_power_of_two)
+           << Arg->getSourceRange();
+
+    if (Result < Context.getCharWidth())
+      return Diag(TheCall->getLocStart(), diag::err_alignment_too_small)
+           << (unsigned)Context.getCharWidth()
+           << Arg->getSourceRange();
+
+    if (Result > INT32_MAX)
+      return Diag(TheCall->getLocStart(), diag::err_alignment_too_big)
+           << INT32_MAX
+           << Arg->getSourceRange();
+  }
 
   return false;
 }
@@ -9319,25 +9335,19 @@ void AnalyzeImplicitConversions(Sema &S, Expr *OrigE, SourceLocation CC) {
 
 } // end anonymous namespace
 
-static bool checkOpenCLEnqueueLocalSizeArgs(Sema &S, CallExpr *TheCall,
-                                            unsigned Start, unsigned End) {
-  bool IllegalParams = false;
-  for (unsigned I = Start; I <= End; ++I) {
-    QualType Ty = TheCall->getArg(I)->getType();
-    // Taking into account implicit conversions,
-    // allow any integer within 32 bits range
-    if (!Ty->isIntegerType() ||
-        S.Context.getTypeSizeInChars(Ty).getQuantity() > 4) {
-      S.Diag(TheCall->getArg(I)->getLocStart(),
-             diag::err_opencl_enqueue_kernel_invalid_local_size_type);
-      IllegalParams = true;
-    }
-    // Potentially emit standard warnings for implicit conversions if enabled
-    // using -Wconversion.
-    CheckImplicitConversion(S, TheCall->getArg(I), S.Context.UnsignedIntTy,
-                            TheCall->getArg(I)->getLocStart());
+/// Diagnose integer type and any valid implicit convertion to it.
+static bool checkOpenCLEnqueueIntType(Sema &S, Expr *E, const QualType &IntT) {
+  // Taking into account implicit conversions,
+  // allow any integer.
+  if (!E->getType()->isIntegerType()) {
+    S.Diag(E->getLocStart(),
+           diag::err_opencl_enqueue_kernel_invalid_local_size_type);
+    return true;
   }
-  return IllegalParams;
+  // Potentially emit standard warnings for implicit conversions if enabled
+  // using -Wconversion.
+  CheckImplicitConversion(S, E, IntT, E->getLocStart());
+  return false;
 }
 
 // Helper function for Sema::DiagnoseAlwaysNonNullPointer.
@@ -11694,7 +11704,8 @@ void Sema::DiagnoseMisalignedMembers() {
 }
 
 void Sema::DiscardMisalignedMemberAddress(const Type *T, Expr *E) {
-  if (!T->isPointerType())
+  E = E->IgnoreParens();
+  if (!T->isPointerType() && !T->isIntegerType())
     return;
   if (isa<UnaryOperator>(E) &&
       cast<UnaryOperator>(E)->getOpcode() == UO_AddrOf) {
@@ -11703,7 +11714,9 @@ void Sema::DiscardMisalignedMemberAddress(const Type *T, Expr *E) {
       auto MA = std::find(MisalignedMembers.begin(), MisalignedMembers.end(),
                           MisalignedMember(Op));
       if (MA != MisalignedMembers.end() &&
-          Context.getTypeAlignInChars(T->getPointeeType()) <= MA->Alignment)
+          (T->isIntegerType() ||
+           (T->isPointerType() &&
+            Context.getTypeAlignInChars(T->getPointeeType()) <= MA->Alignment)))
         MisalignedMembers.erase(MA);
     }
   }
@@ -11711,28 +11724,103 @@ void Sema::DiscardMisalignedMemberAddress(const Type *T, Expr *E) {
 
 void Sema::RefersToMemberWithReducedAlignment(
     Expr *E,
-    std::function<void(Expr *, RecordDecl *, ValueDecl *, CharUnits)> Action) {
+    std::function<void(Expr *, RecordDecl *, FieldDecl *, CharUnits)> Action) {
   const auto *ME = dyn_cast<MemberExpr>(E);
-  while (ME && isa<FieldDecl>(ME->getMemberDecl())) {
+  if (!ME)
+    return;
+
+  // For a chain of MemberExpr like "a.b.c.d" this list
+  // will keep FieldDecl's like [d, c, b].
+  SmallVector<FieldDecl *, 4> ReverseMemberChain;
+  const MemberExpr *TopME = nullptr;
+  bool AnyIsPacked = false;
+  do {
     QualType BaseType = ME->getBase()->getType();
     if (ME->isArrow())
       BaseType = BaseType->getPointeeType();
     RecordDecl *RD = BaseType->getAs<RecordType>()->getDecl();
 
     ValueDecl *MD = ME->getMemberDecl();
-    bool ByteAligned = Context.getTypeAlignInChars(MD->getType()).isOne();
-    if (ByteAligned) // Attribute packed does not have any effect.
-      break;
+    auto *FD = dyn_cast<FieldDecl>(MD);
+    // We do not care about non-data members.
+    if (!FD || FD->isInvalidDecl())
+      return;
 
-    if (!ByteAligned &&
-        (RD->hasAttr<PackedAttr>() || (MD->hasAttr<PackedAttr>()))) {
-      CharUnits Alignment = std::min(Context.getTypeAlignInChars(MD->getType()),
-                                     Context.getTypeAlignInChars(BaseType));
-      // Notify that this expression designates a member with reduced alignment
-      Action(E, RD, MD, Alignment);
-      break;
+    AnyIsPacked =
+        AnyIsPacked || (RD->hasAttr<PackedAttr>() || MD->hasAttr<PackedAttr>());
+    ReverseMemberChain.push_back(FD);
+
+    TopME = ME;
+    ME = dyn_cast<MemberExpr>(ME->getBase()->IgnoreParens());
+  } while (ME);
+  assert(TopME && "We did not compute a topmost MemberExpr!");
+
+  // Not the scope of this diagnostic.
+  if (!AnyIsPacked)
+    return;
+
+  const Expr *TopBase = TopME->getBase()->IgnoreParenImpCasts();
+  const auto *DRE = dyn_cast<DeclRefExpr>(TopBase);
+  // TODO: The innermost base of the member expression may be too complicated.
+  // For now, just disregard these cases. This is left for future
+  // improvement.
+  if (!DRE && !isa<CXXThisExpr>(TopBase))
+      return;
+
+  // Alignment expected by the whole expression.
+  CharUnits ExpectedAlignment = Context.getTypeAlignInChars(E->getType());
+
+  // No need to do anything else with this case.
+  if (ExpectedAlignment.isOne())
+    return;
+
+  // Synthesize offset of the whole access.
+  CharUnits Offset;
+  for (auto I = ReverseMemberChain.rbegin(); I != ReverseMemberChain.rend();
+       I++) {
+    Offset += Context.toCharUnitsFromBits(Context.getFieldOffset(*I));
+  }
+
+  // Compute the CompleteObjectAlignment as the alignment of the whole chain.
+  CharUnits CompleteObjectAlignment = Context.getTypeAlignInChars(
+      ReverseMemberChain.back()->getParent()->getTypeForDecl());
+
+  // The base expression of the innermost MemberExpr may give
+  // stronger guarantees than the class containing the member.
+  if (DRE && !TopME->isArrow()) {
+    const ValueDecl *VD = DRE->getDecl();
+    if (!VD->getType()->isReferenceType())
+      CompleteObjectAlignment =
+          std::max(CompleteObjectAlignment, Context.getDeclAlign(VD));
+  }
+
+  // Check if the synthesized offset fulfills the alignment.
+  if (Offset % ExpectedAlignment != 0 ||
+      // It may fulfill the offset it but the effective alignment may still be
+      // lower than the expected expression alignment.
+      CompleteObjectAlignment < ExpectedAlignment) {
+    // If this happens, we want to determine a sensible culprit of this.
+    // Intuitively, watching the chain of member expressions from right to
+    // left, we start with the required alignment (as required by the field
+    // type) but some packed attribute in that chain has reduced the alignment.
+    // It may happen that another packed structure increases it again. But if
+    // we are here such increase has not been enough. So pointing the first
+    // FieldDecl that either is packed or else its RecordDecl is,
+    // seems reasonable.
+    FieldDecl *FD = nullptr;
+    CharUnits Alignment;
+    for (FieldDecl *FDI : ReverseMemberChain) {
+      if (FDI->hasAttr<PackedAttr>() ||
+          FDI->getParent()->hasAttr<PackedAttr>()) {
+        FD = FDI;
+        Alignment = std::min(
+            Context.getTypeAlignInChars(FD->getType()),
+            Context.getTypeAlignInChars(FD->getParent()->getTypeForDecl()));
+        break;
+      }
     }
-    ME = dyn_cast<MemberExpr>(ME->getBase());
+    assert(FD && "We did not find a packed FieldDecl!");
+    Action(E, FD->getParent(), FD, Alignment);
   }
 }
 
