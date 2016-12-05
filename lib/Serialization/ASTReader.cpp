@@ -4189,8 +4189,7 @@ static ASTFileSignature readASTFileSignature(StringRef PCH) {
   ASTReader::RecordData Record;
   while (true) {
     llvm::BitstreamEntry Entry = Stream.advanceSkippingSubblocks();
-    if (Entry.Kind == llvm::BitstreamEntry::EndBlock ||
-        Entry.Kind != llvm::BitstreamEntry::Record)
+    if (Entry.Kind != llvm::BitstreamEntry::Record)
       return 0;
 
     Record.clear();
@@ -5797,15 +5796,17 @@ QualType ASTReader::readTypeRecord(unsigned Index) {
   }
 
   case TYPE_PIPE: {
-    if (Record.size() != 1) {
+    if (Record.size() != 2) {
       Error("Incorrect encoding of pipe type");
       return QualType();
     }
 
     // Reading the pipe element type.
     QualType ElementType = readType(*Loc.F, Record, Idx);
-    return Context.getPipeType(ElementType);
+    unsigned ReadOnly = Record[1];
+    return Context.getPipeType(ElementType, ReadOnly);
   }
+
   }
   llvm_unreachable("Invalid TypeCode!");
 }
