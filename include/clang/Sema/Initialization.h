@@ -732,8 +732,9 @@ public:
     /// \brief Array initialization by elementwise copy.
     SK_ArrayLoopInit,
     /// \brief Array initialization (from an array rvalue).
-    /// This is a GNU C extension.
     SK_ArrayInit,
+    /// \brief Array initialization (from an array rvalue) as a GNU extension.
+    SK_GNUArrayInit,
     /// \brief Array initialization from a parenthesized initializer list.
     /// This is a GNU C++ extension.
     SK_ParenthesizedArrayInit,
@@ -750,6 +751,8 @@ public:
     SK_StdInitializerListConstructorCall,
     /// \brief Initialize an OpenCL sampler from an integer.
     SK_OCLSamplerInit,
+    /// \brief Initialize queue_t from 0.
+    SK_OCLZeroQueue,
     /// \brief Passing zero to a function where OpenCL event_t is expected.
     SK_OCLZeroEvent
   };
@@ -1123,7 +1126,7 @@ public:
   void AddArrayInitLoopStep(QualType T, QualType EltTy);
 
   /// \brief Add an array initialization step.
-  void AddArrayInitStep(QualType T);
+  void AddArrayInitStep(QualType T, bool IsGNUExtension);
 
   /// \brief Add a parenthesized array initialization step.
   void AddParenthesizedArrayInitStep(QualType T);
@@ -1146,6 +1149,9 @@ public:
   /// \brief Add a step to initialize an OpenCL event_t from a NULL
   /// constant.
   void AddOCLZeroEventStep(QualType T);
+
+  /// \brief Add a step to initialize an OpenCL queue_t from 0.
+  void AddOCLZeroQueueStep(QualType T);
 
   /// \brief Add steps to unwrap a initializer list for a reference around a
   /// single element and rewrap it at the end.

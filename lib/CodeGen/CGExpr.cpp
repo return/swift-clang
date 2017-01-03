@@ -2545,7 +2545,8 @@ static void emitCheckHandlerCall(CodeGenFunction &CGF,
   llvm::Value *Fn = CGF.CGM.CreateRuntimeFunction(
       FnType, FnName,
       llvm::AttributeSet::get(CGF.getLLVMContext(),
-                              llvm::AttributeSet::FunctionIndex, B));
+                              llvm::AttributeSet::FunctionIndex, B),
+      /*Local=*/true);
   llvm::CallInst *HandlerCall = CGF.EmitNounwindRuntimeCall(Fn, FnArgs);
   if (!MayReturn) {
     HandlerCall->setDoesNotReturn();
@@ -3780,6 +3781,8 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
                                              ConvertType(E->getType()));
     return MakeAddrLValue(V, E->getType(), LV.getAlignmentSource());
   }
+  case CK_ZeroToOCLQueue:
+    llvm_unreachable("NULL to OpenCL queue lvalue cast is not valid");
   case CK_ZeroToOCLEvent:
     llvm_unreachable("NULL to OpenCL event lvalue cast is not valid");
   }

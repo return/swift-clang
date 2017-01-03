@@ -3068,6 +3068,7 @@ void InitializationSequence::Step::Destroy() {
   case SK_ArrayLoopIndex:
   case SK_ArrayLoopInit:
   case SK_ArrayInit:
+  case SK_GNUArrayInit:
   case SK_ParenthesizedArrayInit:
   case SK_PassByIndirectCopyRestore:
   case SK_PassByIndirectRestore:
@@ -3076,6 +3077,7 @@ void InitializationSequence::Step::Destroy() {
   case SK_StdInitializerListConstructorCall:
   case SK_OCLSamplerInit:
   case SK_OCLZeroEvent:
+  case SK_OCLZeroQueue:
     break;
 
   case SK_ConversionSequence:
@@ -3302,9 +3304,9 @@ void InitializationSequence::AddObjCObjectConversionStep(QualType T) {
   Steps.push_back(S);
 }
 
-void InitializationSequence::AddArrayInitStep(QualType T) {
+void InitializationSequence::AddArrayInitStep(QualType T, bool IsGNUExtension) {
   Step S;
-  S.Kind = SK_ArrayInit;
+  S.Kind = IsGNUExtension ? SK_GNUArrayInit : SK_ArrayInit;
   S.Type = T;
   Steps.push_back(S);
 }
@@ -3360,6 +3362,13 @@ void InitializationSequence::AddOCLSamplerInitStep(QualType T) {
 void InitializationSequence::AddOCLZeroEventStep(QualType T) {
   Step S;
   S.Kind = SK_OCLZeroEvent;
+  S.Type = T;
+  Steps.push_back(S);
+}
+
+void InitializationSequence::AddOCLZeroQueueStep(QualType T) {
+  Step S;
+  S.Kind = SK_OCLZeroQueue;
   S.Type = T;
   Steps.push_back(S);
 }
@@ -3608,17 +3617,7 @@ static void TryConstructorInitialization(Sema &S,
       UnwrappedArgs.size() == 1 && UnwrappedArgs[0]->isRValue() &&
       S.Context.hasSameUnqualifiedType(UnwrappedArgs[0]->getType(), DestType)) {
     // Convert qualifications if necessary.
-    QualType InitType = UnwrappedArgs[0]->getType();
-    ImplicitConversionSequence ICS;
-    ICS.setStandard();
-    ICS.Standard.setAsIdentityConversion();
-    ICS.Standard.setFromType(InitType);
-    ICS.Standard.setAllToTypes(InitType);
-    if (!S.Context.hasSameType(InitType, DestType)) {
-      ICS.Standard.Third = ICK_Qualification;
-      ICS.Standard.setToType(2, DestType);
-    }
-    Sequence.AddConversionSequenceStep(ICS, DestType);
+    Sequence.AddQualificationConversionStep(DestType, VK_RValue);
     if (ILE)
       Sequence.RewrapReferenceInitList(DestType, ILE);
     return;
@@ -4548,23 +4547,21 @@ static void TryValueInitialization(Sema &S,
   if (const RecordType *RT = T->getAs<RecordType>()) {
     if (CXXRecordDecl *ClassDecl = dyn_cast<CXXRecordDecl>(RT->getDecl())) {
       bool NeedZeroInitialization = true;
-      if (!S.getLangOpts().CPlusPlus11) {
-        // C++98:
-        // -- if T is a class type (clause 9) with a user-declared constructor
-        //    (12.1), then the default constructor for T is called (and the
-        //    initialization is ill-formed if T has no accessible default
-        //    constructor);
-        if (ClassDecl->hasUserDeclaredConstructor())
-          NeedZeroInitialization = false;
-      } else {
-        // C++11:
-        // -- if T is a class type (clause 9) with either no default constructor
-        //    (12.1 [class.ctor]) or a default constructor that is user-provided
-        //    or deleted, then the object is default-initialized;
-        CXXConstructorDecl *CD = S.LookupDefaultConstructor(ClassDecl);
-        if (!CD || !CD->getCanonicalDecl()->isDefaulted() || CD->isDeleted())
-          NeedZeroInitialization = false;
-      }
+      // C++98:
+      // -- if T is a class type (clause 9) with a user-declared constructor
+      //    (12.1), then the default constructor for T is called (and the
+      //    initialization is ill-formed if T has no accessible default
+      //    constructor);
+      // C++11:
+      // -- if T is a class type (clause 9) with either no default constructor
+      //    (12.1 [class.ctor]) or a default constructor that is user-provided
+      //    or deleted, then the object is default-initialized;
+      //
+      // Note that the C++11 rule is the same as the C++98 rule if there are no
+      // defaulted or deleted constructors, so we just use it unconditionally.
+      CXXConstructorDecl *CD = S.LookupDefaultConstructor(ClassDecl);
+      if (!CD || !CD->getCanonicalDecl()->isDefaulted() || CD->isDeleted())
+        NeedZeroInitialization = false;
 
       // -- if T is a (possibly cv-qualified) non-union class type without a
       //    user-provided or deleted default constructor, then the object is
@@ -4598,7 +4595,7 @@ static void TryValueInitialization(Sema &S,
       MultiExprArg Args(&InitListAsExpr, InitList ? 1 : 0);
       bool InitListSyntax = InitList;
 
-      // FIXME: Instead of creating a CXXConstructExpr of non-array type here,
+      // FIXME: Instead of creating a CXXConstructExpr of array type here,
       // wrap a class-typed CXXConstructExpr in an ArrayInitLoopExpr.
       return TryConstructorInitialization(
           S, Entity, Kind, Args, T, Entity.getType(), Sequence, InitListSyntax);
@@ -4789,6 +4786,8 @@ static void TryUserDefinedConversion(Sema &S,
     // FIXME: Mark this copy as extraneous.
     if (!S.getLangOpts().CPlusPlus1z)
       Sequence.AddFinalCopy(DestType);
+    else if (DestType.hasQualifiers())
+      Sequence.AddQualificationConversionStep(DestType, VK_RValue);
     return;
   }
 
@@ -4811,6 +4810,8 @@ static void TryUserDefinedConversion(Sema &S,
         Function->getReturnType()->isReferenceType() ||
         !S.Context.hasSameUnqualifiedType(ConvType, DestType))
       Sequence.AddFinalCopy(DestType);
+    else if (!S.Context.hasSameType(ConvType, DestType))
+      Sequence.AddQualificationConversionStep(DestType, VK_RValue);
     return;
   }
 
@@ -5029,6 +5030,20 @@ static bool TryOCLZeroEventInitialization(Sema &S,
   return true;
 }
 
+static bool TryOCLZeroQueueInitialization(Sema &S,
+                                          InitializationSequence &Sequence,
+                                          QualType DestType,
+                                          Expr *Initializer) {
+  if (!S.getLangOpts().OpenCL || S.getLangOpts().OpenCLVersion < 200 ||
+      !DestType->isQueueT() ||
+      !Initializer->isIntegerConstantExpr(S.getASTContext()) ||
+      (Initializer->EvaluateKnownConstInt(S.getASTContext()) != 0))
+    return false;
+
+  Sequence.AddOCLZeroQueueStep(DestType);
+  return true;
+}
+
 InitializationSequence::InitializationSequence(Sema &S,
                                                const InitializedEntity &Entity,
                                                const InitializationKind &Kind,
@@ -5217,8 +5232,7 @@ void InitializationSequence::InitializeFrom(Sema &S,
         canPerformArrayCopy(Entity)) {
       // If source is a prvalue, use it directly.
       if (Initializer->getValueKind() == VK_RValue) {
-        // FIXME: This produces a bogus extwarn
-        AddArrayInitStep(DestType);
+        AddArrayInitStep(DestType, /*IsGNUExtension*/false);
         return;
       }
 
@@ -5227,8 +5241,9 @@ void InitializationSequence::InitializeFrom(Sema &S,
           InitializedEntity::InitializeElement(S.Context, 0, Entity);
       QualType InitEltT =
           Context.getAsArrayType(Initializer->getType())->getElementType();
-      OpaqueValueExpr OVE(SourceLocation(), InitEltT,
-                          Initializer->getValueKind());
+      OpaqueValueExpr OVE(Initializer->getExprLoc(), InitEltT,
+                          Initializer->getValueKind(),
+                          Initializer->getObjectKind());
       Expr *OVEAsExpr = &OVE;
       InitializeFrom(S, Element, Kind, OVEAsExpr, TopLevelOfInitList,
                      TreatUnavailableAsInvalid);
@@ -5250,7 +5265,7 @@ void InitializationSequence::InitializeFrom(Sema &S,
       else if (Initializer->HasSideEffects(S.Context))
         SetFailed(FK_NonConstantArrayInit);
       else {
-        AddArrayInitStep(DestType);
+        AddArrayInitStep(DestType, /*IsGNUExtension*/true);
       }
     }
     // Note: as a GNU C++ extension, we allow list-initialization of a
@@ -5290,6 +5305,9 @@ void InitializationSequence::InitializeFrom(Sema &S,
 
     if (TryOCLZeroEventInitialization(S, *this, DestType, Initializer))
       return;
+
+    if (TryOCLZeroQueueInitialization(S, *this, DestType, Initializer))
+       return;
 
     // Handle initialization in C
     AddCAssignmentStep(DestType);
@@ -6365,6 +6383,8 @@ ExprResult Sema::TemporaryMaterializationConversion(Expr *E) {
     return E;
 
   // C++1z [conv.rval]/1: T shall be a complete type.
+  // FIXME: Does this ever matter (can we form a prvalue of incomplete type)?
+  // If so, we should check for a non-abstract class type here too.
   QualType T = E->getType();
   if (RequireCompleteType(E->getExprLoc(), T, diag::err_incomplete_type))
     return ExprError();
@@ -6519,13 +6539,15 @@ InitializationSequence::Perform(Sema &S,
   case SK_ArrayLoopIndex:
   case SK_ArrayLoopInit:
   case SK_ArrayInit:
+  case SK_GNUArrayInit:
   case SK_ParenthesizedArrayInit:
   case SK_PassByIndirectCopyRestore:
   case SK_PassByIndirectRestore:
   case SK_ProduceObjCObject:
   case SK_StdInitializerList:
   case SK_OCLSamplerInit:
-  case SK_OCLZeroEvent: {
+  case SK_OCLZeroEvent:
+  case SK_OCLZeroQueue: {
     assert(Args.size() == 1);
     CurInit = Args[0];
     if (!CurInit.get()) return ExprError();
@@ -6538,6 +6560,17 @@ InitializationSequence::Perform(Sema &S,
   case SK_ZeroInitialization:
     break;
   }
+
+  // C++ [class.abstract]p2:
+  //   no objects of an abstract class can be created except as subobjects
+  //   of a class derived from it
+  auto checkAbstractType = [&](QualType T) -> bool {
+    if (Entity.getKind() == InitializedEntity::EK_Base ||
+        Entity.getKind() == InitializedEntity::EK_Delegating)
+      return false;
+    return S.RequireNonAbstractType(Kind.getLocation(), T,
+                                    diag::err_allocation_of_abstract_type);
+  };
 
   // Walk through the computed steps for the initialization sequence,
   // performing the specified conversions along the way.
@@ -6645,6 +6678,9 @@ InitializationSequence::Perform(Sema &S,
     }
 
     case SK_FinalCopy:
+      if (checkAbstractType(Step->Type))
+        return ExprError();
+
       // If the overall initialization is initializing a temporary, we already
       // bound our argument if it was necessary to do so. If not (if we're
       // ultimately initializing a non-temporary), our argument needs to be
@@ -6729,6 +6765,9 @@ InitializationSequence::Perform(Sema &S,
         CreatedObject = Conversion->getReturnType()->isRecordType();
       }
 
+      if (CreatedObject && checkAbstractType(CurInit.get()->getType()))
+        return ExprError();
+
       CurInit = ImplicitCastExpr::Create(S.Context, CurInit.get()->getType(),
                                          CastKind, CurInit.get(), nullptr,
                                          CurInit.get()->getValueKind());
@@ -6803,7 +6842,7 @@ InitializationSequence::Perform(Sema &S,
       CurInit = CurInitExprRes;
 
       if (Step->Kind == SK_ConversionSequenceNoNarrowing &&
-          S.getLangOpts().CPlusPlus && !CurInit.get()->isValueDependent())
+          S.getLangOpts().CPlusPlus)
         DiagnoseNarrowingInInitList(S, *Step->ICS, SourceType, Entity.getType(),
                                     CurInit.get());
 
@@ -6811,6 +6850,9 @@ InitializationSequence::Perform(Sema &S,
     }
 
     case SK_ListInitialization: {
+      if (checkAbstractType(Step->Type))
+        return ExprError();
+
       InitListExpr *InitList = cast<InitListExpr>(CurInit.get());
       // If we're not initializing the top-level entity, we need to create an
       // InitializeTemporary entity for our target type.
@@ -6847,6 +6889,9 @@ InitializationSequence::Perform(Sema &S,
     }
 
     case SK_ConstructorInitializationFromList: {
+      if (checkAbstractType(Step->Type))
+        return ExprError();
+
       // When an initializer list is passed for a parameter of type "reference
       // to object", we don't get an EK_Temporary entity, but instead an
       // EK_Parameter entity with reference type.
@@ -6890,6 +6935,9 @@ InitializationSequence::Perform(Sema &S,
 
     case SK_ConstructorInitialization:
     case SK_StdInitializerListConstructorCall: {
+      if (checkAbstractType(Step->Type))
+        return ExprError();
+
       // When an initializer list is passed for a parameter of type "reference
       // to object", we don't get an EK_Temporary entity, but instead an
       // EK_Parameter entity with reference type.
@@ -7010,13 +7058,14 @@ InitializationSequence::Perform(Sema &S,
       break;
     }
 
-    case SK_ArrayInit:
+    case SK_GNUArrayInit:
       // Okay: we checked everything before creating this step. Note that
       // this is a GNU extension.
       S.Diag(Kind.getLocation(), diag::ext_array_init_copy)
         << Step->Type << CurInit.get()->getType()
         << CurInit.get()->getSourceRange();
-
+      LLVM_FALLTHROUGH;
+    case SK_ArrayInit:
       // If the destination type is an incomplete array type, update the
       // type accordingly.
       if (ResultType) {
@@ -7179,6 +7228,15 @@ InitializationSequence::Perform(Sema &S,
 
       CurInit = S.ImpCastExprToType(CurInit.get(), Step->Type,
                                     CK_ZeroToOCLEvent,
+                                    CurInit.get()->getValueKind());
+      break;
+    }
+    case SK_OCLZeroQueue: {
+      assert(Step->Type->isQueueT() &&
+             "Event initialization on non queue type.");
+
+      CurInit = S.ImpCastExprToType(CurInit.get(), Step->Type,
+                                    CK_ZeroToOCLQueue,
                                     CurInit.get()->getValueKind());
       break;
     }
@@ -7975,6 +8033,10 @@ void InitializationSequence::dump(raw_ostream &OS) const {
       OS << "array initialization";
       break;
 
+    case SK_GNUArrayInit:
+      OS << "array initialization (GNU extension)";
+      break;
+
     case SK_ParenthesizedArrayInit:
       OS << "parenthesized array initialization";
       break;
@@ -8005,6 +8067,10 @@ void InitializationSequence::dump(raw_ostream &OS) const {
 
     case SK_OCLZeroEvent:
       OS << "OpenCL event_t from zero";
+      break;
+
+    case SK_OCLZeroQueue:
+      OS << "OpenCL queue_t from zero";
       break;
     }
 
@@ -8043,6 +8109,7 @@ static void DiagnoseNarrowingInInitList(Sema &S,
   switch (SCS->getNarrowingKind(S.Context, PostInit, ConstantValue,
                                 ConstantType)) {
   case NK_Not_Narrowing:
+  case NK_Dependent_Narrowing:
     // No narrowing occurred.
     return;
 

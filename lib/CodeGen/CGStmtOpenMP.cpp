@@ -2003,6 +2003,45 @@ void CodeGenFunction::EmitOMPTeamsDistributeParallelForDirective(
       });
 }
 
+void CodeGenFunction::EmitOMPTargetTeamsDirective(
+    const OMPTargetTeamsDirective &S) {
+  CGM.getOpenMPRuntime().emitInlinedDirective(
+      *this, OMPD_target_teams, [&S](CodeGenFunction &CGF, PrePostActionTy &) {
+        CGF.EmitStmt(
+            cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
+      });
+}
+
+void CodeGenFunction::EmitOMPTargetTeamsDistributeDirective(
+    const OMPTargetTeamsDistributeDirective &S) {
+  CGM.getOpenMPRuntime().emitInlinedDirective(
+      *this, OMPD_target_teams_distribute,
+      [&S](CodeGenFunction &CGF, PrePostActionTy &) {
+        CGF.EmitStmt(
+            cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
+      });
+}
+
+void CodeGenFunction::EmitOMPTargetTeamsDistributeParallelForDirective(
+    const OMPTargetTeamsDistributeParallelForDirective &S) {
+  CGM.getOpenMPRuntime().emitInlinedDirective(
+      *this, OMPD_target_teams_distribute_parallel_for,
+      [&S](CodeGenFunction &CGF, PrePostActionTy &) {
+        CGF.EmitStmt(
+            cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
+      });
+}
+
+void CodeGenFunction::EmitOMPTargetTeamsDistributeParallelForSimdDirective(
+    const OMPTargetTeamsDistributeParallelForSimdDirective &S) {
+  CGM.getOpenMPRuntime().emitInlinedDirective(
+      *this, OMPD_target_teams_distribute_parallel_for_simd,
+      [&S](CodeGenFunction &CGF, PrePostActionTy &) {
+        CGF.EmitStmt(
+            cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
+      });
+}
+
 /// \brief Emit a helper variable and return corresponding lvalue.
 static LValue EmitOMPHelperVar(CodeGenFunction &CGF,
                                const DeclRefExpr *Helper) {
@@ -3439,7 +3478,7 @@ static void emitCommonOMPTeamsDirective(CodeGenFunction &CGF,
 }
 
 void CodeGenFunction::EmitOMPTeamsDirective(const OMPTeamsDirective &S) {
-  // Emit parallel region as a standalone region.
+  // Emit teams region as a standalone region.
   auto &&CodeGen = [&S](CodeGenFunction &CGF, PrePostActionTy &) {
     OMPPrivateScope PrivateScope(CGF);
     (void)CGF.EmitOMPFirstprivateClause(S, PrivateScope);
