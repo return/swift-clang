@@ -3245,8 +3245,11 @@ ASTReader::ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
         for (unsigned I = 0, N = Record.size(); I != N; /**/) {
           unsigned GlobalID = getGlobalSubmoduleID(F, Record[I++]);
           SourceLocation Loc = ReadSourceLocation(F, Record, I);
-          if (GlobalID)
+          if (GlobalID) {
             ImportedModules.push_back(ImportedSubmodule(GlobalID, Loc));
+            if (DeserializationListener)
+              DeserializationListener->ModuleImportRead(GlobalID, Loc);
+          }
         }
       }
       break;
@@ -5992,6 +5995,8 @@ void TypeLocReader::VisitFunctionTypeLoc(FunctionTypeLoc TL) {
   TL.setLocalRangeBegin(ReadSourceLocation());
   TL.setLParenLoc(ReadSourceLocation());
   TL.setRParenLoc(ReadSourceLocation());
+  TL.setExceptionSpecRange(SourceRange(Reader->ReadSourceLocation(*F, Record, Idx),
+                                       Reader->ReadSourceLocation(*F, Record, Idx)));
   TL.setLocalRangeEnd(ReadSourceLocation());
   for (unsigned i = 0, e = TL.getNumParams(); i != e; ++i) {
     TL.setParam(i, Reader->ReadDeclAs<ParmVarDecl>(*F, Record, Idx));
